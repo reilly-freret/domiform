@@ -1,0 +1,9 @@
+# editor configs
+.claude/
+.cursor/
+
+# build artifacts
+target/
+
+# system files ew
+.DS_Store

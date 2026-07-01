@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  z2m:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+devices:
+  reilly_dimmer:
+    adapter: z2m
+    address: hue_battery_dimmer_a
+    events:
+      power: on_press_release
+      up: up_press_release
+      down: down_press_release
+      off: off_press_release
+
+  kennedy_dimmer:
+    adapter: z2m
+    address: hue_battery_dimmer_b
+    events:
+      power: on_press_release
+      up: up_press_release
+      down: down_press_release
+      off: off_press_release
+
+  reilly_nightstand:
+    adapter: z2m
+    address: 3r_rgb_a
+    capabilities: [switch, brightness]
+
+  kennedy_nightstand:
+    adapter: z2m
+    address: 3r_rgb_b
+    capabilities: [switch, brightness]
+
+  bedroom_wall_switch:
+    adapter: z2m
+    address: "sonoff_mains_decora_a"
+    events:
+      middle: toggle_l2
+
+rules:
+  kennedy_toggle: 
+    when:
+      event: kennedy_dimmer.power
+    then: 
+      - toggle: kennedy_nightstand
+
+  kennedy_dim:
+    when: 
+      event: kennedy_dimmer.down
+    then:
+      - decrease_brightness: { device: kennedy_nightstand, value: 20 }
+
+  kennedy_brighten:
+    when: 
+      event: kennedy_dimmer.up
+    then:
+      - increase_brightness: { device: kennedy_nightstand, value: 20 }
+  
+  kennedy_both_off:
+    when:
+      event: kennedy_dimmer.off
+    if:
+      switch_is: 
+        device: kennedy_nightstand
+        on: true
+    then:
+      - turn_off: kennedy_nightstand
+      - turn_off: reilly_nightstand
+
+  kennedy_both_on:
+    when:
+      event: kennedy_dimmer.off
+    if:
+      switch_is: 
+        device: kennedy_nightstand
+        on: false
+    then:
+      - set_brightness: { device: kennedy_nightstand, value: 100 }
+      - set_brightness: { device: reilly_nightstand, value: 100 }
+
+  reilly_toggle: 
+    when:
+      event: reilly_dimmer.power
+    then: 
+      - toggle: reilly_nightstand
+
+  reilly_dim:
+    when: 
+      event: reilly_dimmer.down
+    then:
+      - decrease_brightness: { device: reilly_nightstand, value: 20 }
+
+  reilly_brighten:
+    when: 
+      event: reilly_dimmer.up
+    then:
+      - increase_brightness: { device: reilly_nightstand, value: 20 }
+  
+  reilly_both_off:
+    when:
+      event: reilly_dimmer.off
+    if:
+      switch_is: 
+        device: reilly_nightstand
+        on: true
+    then:
+      - turn_off: kennedy_nightstand
+      - turn_off: reilly_nightstand
+
+  reilly_both_on:
+    when:
+      event: reilly_dimmer.off
+    if:
+      switch_is: 
+        device: kennedy_nightstand
+        on: false
+    then:
+      - set_brightness: { device: kennedy_nightstand, value: 100 }
+      - set_brightness: { device: reilly_nightstand, value: 100 }
+
+  wall_switch_off:
+    when:
+      event: bedroom_wall_switch.middle
+    if:
+      switch_is: 
+        device: kennedy_nightstand
+        on: true
+    then:
+      - turn_off: kennedy_nightstand
+      - turn_off: reilly_nightstand
+
+  wall_switch_on:
+    when:
+      event: bedroom_wall_switch.middle
+    if:
+      switch_is: 
+        device: kennedy_nightstand
+        on: false
+    then:
+      - set_brightness: { device: kennedy_nightstand, value: 100 }
+      - set_brightness: { device: reilly_nightstand, value: 100 }

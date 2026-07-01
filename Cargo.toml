@@ -1,0 +1,26 @@
+[package]
+name = "domiform"
+version = "0.0.0"
+edition = "2021"
+description = "A declarative engine that shapes the home: config compiles to an object graph, events flow through a deterministic bus."
+
+[lib]
+name = "domiform"
+path = "src/lib.rs"
+
+[dependencies]
+# Real protocol transports, always compiled. The adapters stay testable without a
+# broker/controller because the network sits behind a trait seam (`MqttTransport`,
+# `MatterController`) that tests swap for an in-memory fake — not behind a feature.
+rumqttc = { version = "0.25.1", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_yaml = "0.9.34"
+# Async WebSocket client for the Matter adapter. The adapter confines all async to
+# a background tokio runtime; the engine stays single-threaded and synchronous.
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net"] }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+[dev-dependencies]
+serde_json = "1.0.150"

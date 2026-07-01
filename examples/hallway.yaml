@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Example Domiform config: a dark-aware hallway motion light over zigbee2mqtt.
+#
+# Compile + run against a real broker (the zigbee2mqtt transport is always built):
+#     cargo run -- -c examples/hallway.yaml
+
+system:
+  timezone: America/New_York
+  # Used by the clock/sun adapter once real solar math lands.
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  home:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+devices:
+  # `address` is the zigbee2mqtt friendly_name (defaults to the IEEE address).
+  hallway_motion:
+    adapter: home
+    address: "0x00158d0001abc001"
+    capabilities: [occupancy, battery]
+
+  hallway_light:
+    adapter: home
+    address: "0x00158d0001def002"
+    capabilities: [switch, brightness]
+
+rules:
+  # Motion while it's dark turns the light on and cancels any pending off-timer.
+  hallway_on:
+    when: { occupancy: hallway_motion }
+    if: { sun_up: false }
+    then:
+      - turn_on: hallway_light
+      - cancel_timer: hallway_off
+
+  # When motion clears, arm a 5-minute off-timer.
+  hallway_arm_off:
+    when: { occupancy_clear: hallway_motion }
+    then:
+      - schedule_timer: { key: hallway_off, after: 5m }
+
+  # Timer elapsed with no new motion: turn the light off.
+  hallway_off:
+    when: { timer: hallway_off }
+    then:
+      - turn_off: hallway_light

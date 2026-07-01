@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  home:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+devices:
+  # `address` is the zigbee2mqtt friendly_name (defaults to the IEEE address).
+  # This is a 3-gang wall switch. Its stateless events are declared here: a local
+  # name (yours to choose) mapped to the raw z2m `action` string each paddle emits
+  # (`toggle_l1`/`toggle_l2`/`toggle_l3`). Rules below trigger on the local names.
+  button_1:
+    adapter: home
+    address: "sonoff_mains_decora_a"
+    capabilities: [] # buttons are stateless/event-only; no capability needed
+    events:
+      top:    toggle_l1
+      middle: toggle_l2
+      bottom: toggle_l3
+
+  light_1:
+    adapter: home
+    address: "3r_rgb_a"
+    capabilities: [switch, brightness] # actually has more capabilities; not needed for MVP
+
+# `event: <device>.<declared name>` — checked at compile time against the device's
+# `events:` map. Each paddle of the wall switch does something to the same light.
+rules:
+  light_on:
+    when: { event: button_1.top }
+    then:
+      - turn_on: light_1
+
+  light_off:
+    when: { event: button_1.middle }
+    then:
+      - turn_off: light_1
+
+  light_dim:
+    when: { event: button_1.bottom }
+    then:
+      - set_brightness: { device: light_1, value: 40 }

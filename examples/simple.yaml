@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  home:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+devices:
+  moes_button_grid:
+    adapter: home
+    address: moes_battery_grid_a
+    events:
+      bottom_right_single: 4_single
+
+  third_reality_outlet:
+    adapter: home
+    address: 3r_outlet_d
+    capabilities: [switch]
+
+rules:
+  toggle_outlet:
+    when: { event: moes_button_grid.bottom_right_single }
+    then:
+      - toggle: third_reality_outlet

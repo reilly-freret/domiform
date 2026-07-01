@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/domiform/domiform/schema/domiform.schema.json",
+  "title": "Domiform configuration",
+  "description": "Declarative smart-home config. Mirrors the compiler's accepted shape so editors can flag bad keys/values before `domiform` ever runs. See docs/STATUS.md for semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "system": { "$ref": "#/$defs/system" },
+    "adapters": {
+      "type": "object",
+      "description": "Named protocol adapters. Devices reference these by name.",
+      "additionalProperties": { "$ref": "#/$defs/adapter" }
+    },
+    "devices": {
+      "type": "object",
+      "description": "Named devices, each bound to one adapter.",
+      "additionalProperties": { "$ref": "#/$defs/device" }
+    },
+    "scenes": {
+      "type": "object",
+      "description": "Named, ordered command lists, activated by `activate_scene`.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/command" }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "description": "Named rules: trigger + optional condition + commands.",
+      "additionalProperties": { "$ref": "#/$defs/rule" }
+    }
+  },
+
+  "$defs": {
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "timezone": { "type": "string", "description": "IANA tz, e.g. America/New_York." },
+        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+      }
+    },
+
+    "adapter": {
+      "type": "object",
+      "description": "Discriminated by `type`.",
+      "required": ["type"],
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "zigbee2mqtt" },
+            "url": { "type": "string", "description": "Broker URL, e.g. mqtt://host:1883." },
+            "base_topic": { "type": "string", "default": "zigbee2mqtt" }
+          },
+          "required": ["url"]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "matter" },
+            "url": { "type": "string", "description": "Controller WebSocket URL, e.g. ws://host:5580/ws." }
+          },
+          "required": ["url"]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "mock" }
+          }
+        }
+      ]
+    },
+
+    "capability": {
+      "enum": ["switch", "brightness", "color_temperature", "occupancy", "battery"],
+      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.)"
+    },
+
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter"],
+      "properties": {
+        "adapter": { "type": "string", "description": "Name of an entry in `adapters`." },
+        "address": {
+          "type": "string",
+          "description": "Protocol address. For zigbee2mqtt, the friendly_name; for matter, the decimal node_id (required there)."
+        },
+        "endpoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Matter endpoint (default 1). Ignored by other protocols."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability" },
+          "uniqueItems": true
+        },
+        "events": {
+          "type": "object",
+          "description": "Stateless events: `<local name>: <raw protocol action string>`. Rules trigger on the local name.",
+          "additionalProperties": { "type": "string" }
+        },
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string" },
+        "room": { "type": "string" }
+      }
+    },
+
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when"],
+      "properties": {
+        "when": { "$ref": "#/$defs/trigger" },
+        "if": { "$ref": "#/$defs/condition" },
+        "then": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    },
+
+    "trigger": {
+      "type": "object",
+      "$comment": "Triggers/conditions/commands are terse single-key maps; minProperties/maxProperties + additionalProperties:false enforce exactly one allowed verb.",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string",
+          "pattern": "^[^.]+\\.[^.]+$",
+          "description": "`<device>.<event>`, where <event> is a key in that device's `events:` map."
+        },
+        "occupancy": { "type": "string", "description": "Device became occupied." },
+        "occupancy_clear": { "type": "string", "description": "Device occupancy cleared." },
+        "timer": { "type": "string", "description": "A relative timer with this key elapsed." },
+        "command_failed": {
+          "type": "string",
+          "description": "A device name, or `any`/`*` for any command failure."
+        }
+      }
+    },
+
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "all": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "any": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "not": { "$ref": "#/$defs/condition" },
+        "sun_up": { "type": "boolean" },
+        "switch_is": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "on"],
+          "properties": {
+            "device": { "type": "string" },
+            "on": { "type": "boolean" }
+          }
+        },
+        "occupancy_is": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "occupied"],
+          "properties": {
+            "device": { "type": "string" },
+            "occupied": { "type": "boolean" }
+          }
+        },
+        "time_after": { "$ref": "#/$defs/timeOfDay" },
+        "time_before": { "$ref": "#/$defs/timeOfDay" }
+      }
+    },
+
+    "command": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "turn_on": { "type": "string", "description": "Device name." },
+        "turn_off": { "type": "string", "description": "Device name." },
+        "toggle": { "type": "string", "description": "Device name." },
+        "set_brightness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "value"],
+          "properties": {
+            "device": { "type": "string" },
+            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." },
+            "transition": { "$ref": "#/$defs/duration" }
+          }
+        },
+        "decrease_brightness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "value"],
+          "properties": {
+            "device": { "type": "string" },
+            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." }
+          }
+        },
+        "increase_brightness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "value"],
+          "properties": {
+            "device": { "type": "string" },
+            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." }
+          }
+        },
+        "activate_scene": { "type": "string", "description": "Scene name." },
+        "schedule_timer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "after"],
+          "properties": {
+            "key": { "type": "string" },
+            "after": { "$ref": "#/$defs/duration" }
+          }
+        },
+        "cancel_timer": { "type": "string", "description": "Timer key." }
+      }
+    },
+
+    "duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m|h)$",
+      "description": "e.g. 500ms, 30s, 10m, 1h."
+    },
+
+    "timeOfDay": {
+      "type": "string",
+      "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+      "description": "24-hour HH:MM."
+    }
+  }
+}

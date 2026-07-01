@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Example Domiform config: a Matter desk lamp driven by a zigbee button, mixing
+# two real protocols in one config. The button is on zigbee2mqtt; the lamp is a
+# Matter-over-Thread node behind a python-matter-server controller.
+#
+# Compile + run against real infrastructure (both transports are always built):
+#     cargo run -- -c examples/matter_lamp.yaml
+
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  z2m:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+  matter:
+    type: matter
+    url: ws://burrow.kite-lydian.ts.net:5581/ws
+
+devices:
+  remote:
+    adapter: z2m
+    address: moes_battery_candy_bar_a
+    capabilities: []
+    events:
+      single_press_1: 1_single 
+
+  lr_floor_lamp_branch:
+    adapter: matter
+    address: "1"
+    endpoint: 1
+    capabilities: [switch, brightness]
+
+  lr_floor_lamp_trunk:
+    adapter: matter
+    address: "3"
+    endpoint: 1
+    capabilities: [switch, brightness]
+
+scenes:
+  lr_floor_lamp_on:
+    - turn_on: lr_floor_lamp_branch
+    - turn_on: lr_floor_lamp_trunk
+    - set_brightness: { device: lr_floor_lamp_branch, value: 100 }
+    - set_brightness: { device: lr_floor_lamp_trunk, value: 100 }
+
+  lr_floor_lamp_off:
+    - turn_off: lr_floor_lamp_branch
+    - turn_off: lr_floor_lamp_trunk
+
+rules: 
+  lr_floor_lamp_on:
+    when: { event: remote.single_press_1 }
+    if: { switch_is: { device: lr_floor_lamp_branch, on: false } }
+    then:
+      - activate_scene: lr_floor_lamp_on
+
+  lr_floor_lamp_off:
+    when: { event: remote.single_press_1 }
+    if: { switch_is: { device: lr_floor_lamp_branch, on: true } }
+    then:
+      - activate_scene: lr_floor_lamp_off
