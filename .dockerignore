@@ -1,0 +1,12 @@
+# Build artifacts — rebuilt inside the image; copying them in is slow and can
+# shadow the container's own target dir.
+target/
+
+# Version control and Docker files themselves.
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+
+# Editor/OS cruft.
+.DS_Store
