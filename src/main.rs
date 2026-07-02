@@ -137,8 +137,8 @@ fn main() -> ExitCode {
 
     engine.start();
     println!(
-        "running — Ctrl-C to stop{}",
-        if args.verbose { " (verbose)" } else { "" }
+        "running {}",
+        if args.verbose { "(verbose)" } else { "" }
     );
 
     // Event-driven pump: block until the earlier of the next scheduled wake or an
