@@ -7,11 +7,12 @@
 //! collected — the pass never stops at the first error.
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
-use crate::compile::ast::{RawAdapter, RawConfig};
+use crate::compile::ast::{RawAdapter, RawConfig, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
-use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId};
+use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, ScheduleId, SceneId};
 use crate::model::{CapabilityKind, Command};
 use crate::rule::Rule;
 
@@ -101,6 +102,17 @@ pub struct CompiledScene {
     pub commands: Vec<Command>,
 }
 
+/// A resolved wall-clock schedule: its interned id and the (validated, desugared)
+/// 5-field cron expression the clock adapter fires on. Kept as a string so the
+/// compiler output stays plain data; the engine builder parses it back to a
+/// `croner::Cron`.
+#[derive(Clone, Debug)]
+pub struct CompiledSchedule {
+    pub id: ScheduleId,
+    pub name: String,
+    pub cron: String,
+}
+
 /// The compiled, fully-resolved configuration: the object graph the plan calls
 /// for, with strings already turned into references — including runtime-ready
 /// `Rule`s and scene command lists. `warnings` are surfaced on success.
@@ -110,11 +122,13 @@ pub struct CompiledConfig {
     pub adapters: Vec<AdapterDef>,
     pub devices: Vec<DeviceDef>,
     pub scenes: Vec<CompiledScene>,
+    pub schedules: Vec<CompiledSchedule>,
     pub rules: Vec<Rule>,
     pub warnings: Vec<Diagnostic>,
     adapter_index: HashMap<String, AdapterIdx>,
     device_index: HashMap<String, DeviceId>,
     scene_index: HashMap<String, SceneId>,
+    schedule_index: HashMap<String, ScheduleId>,
     clock_device: DeviceId,
 }
 
@@ -129,6 +143,10 @@ impl CompiledConfig {
 
     pub fn scene_id(&self, name: &str) -> Option<SceneId> {
         self.scene_index.get(name).copied()
+    }
+
+    pub fn schedule_id(&self, name: &str) -> Option<ScheduleId> {
+        self.schedule_index.get(name).copied()
     }
 
     pub fn device(&self, id: DeviceId) -> Option<&DeviceDef> {
@@ -301,23 +319,41 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
         scene_index.insert(name.clone(), SceneId(scene_index.len() as u32));
     }
 
+    // --- schedules: assign ids + desugar/validate to cron -------------------
+    let mut schedule_index: HashMap<String, ScheduleId> = HashMap::new();
+    let mut schedules: Vec<CompiledSchedule> = Vec::new();
+    for (name, raw_schedule) in &raw.schedules {
+        let id = ScheduleId(schedule_index.len() as u32);
+        schedule_index.insert(name.clone(), id);
+        if let Some(cron) = resolve_schedule(name, raw_schedule, &mut diags) {
+            schedules.push(CompiledSchedule {
+                id,
+                name: name.clone(),
+                cron,
+            });
+        }
+    }
+
     // --- lower scenes and rules ---------------------------------------------
     let mut scenes: Vec<CompiledScene> = Vec::new();
     let mut rules: Vec<Rule> = Vec::new();
     let mut scheduled_keys: HashSet<String> = HashSet::new();
     let mut referenced_keys: HashSet<String> = HashSet::new();
     let mut used_scenes: HashSet<SceneId> = HashSet::new();
+    let mut referenced_schedules: HashSet<ScheduleId> = HashSet::new();
 
     {
         let mut lw = Lowerer {
             devices: &devices,
             device_index: &device_index,
             scene_index: &scene_index,
+            schedule_index: &schedule_index,
             clock_device,
             diags: &mut diags,
             scheduled_keys: &mut scheduled_keys,
             referenced_keys: &mut referenced_keys,
             used_scenes: &mut used_scenes,
+            referenced_schedules: &mut referenced_schedules,
         };
 
         for (name, raw_commands) in &raw.scenes {
@@ -400,6 +436,14 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
             );
         }
     }
+    for schedule in &schedules {
+        if !referenced_schedules.contains(&schedule.id) {
+            diags.push(
+                Diagnostic::warning("E_UNUSED_SCHEDULE", "schedule triggers no rule")
+                    .at(format!("schedule '{}'", schedule.name)),
+            );
+        }
+    }
     for key in referenced_keys.difference(&scheduled_keys) {
         diags.push(Diagnostic::warning(
             "E_DANGLING_TIMER",
@@ -413,7 +457,7 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
         ));
     }
 
-    let system = system_config(&raw);
+    let system = system_config(&raw, &mut diags);
 
     if diags.iter().any(Diagnostic::is_error) {
         return Err(CompileErrors(diags));
@@ -424,20 +468,103 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
         adapters,
         devices,
         scenes,
+        schedules,
         rules,
         warnings: diags, // only warnings remain
         adapter_index,
         device_index,
         scene_index,
+        schedule_index,
         clock_device,
     })
 }
 
-fn system_config(raw: &RawConfig) -> SystemConfig {
+fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
+    let timezone = raw.system.timezone.clone().unwrap_or_else(|| "UTC".into());
+    // Validate against the IANA database now, so a typo like `America/New_Yrok`
+    // fails at compile time rather than silently falling back at runtime.
+    if chrono_tz::Tz::from_str(&timezone).is_err() {
+        diags.push(Diagnostic::error(
+            "E_BAD_TIMEZONE",
+            format!("unknown timezone '{timezone}' (expected an IANA name like America/New_York)"),
+        ));
+    }
     SystemConfig {
         name: raw.system.name.clone(),
-        timezone: raw.system.timezone.clone().unwrap_or_else(|| "UTC".into()),
+        timezone,
         latitude: raw.system.latitude.unwrap_or(0.0),
         longitude: raw.system.longitude.unwrap_or(0.0),
     }
+}
+
+/// Desugar one schedule entry to a validated 5-field cron string. Exactly one of
+/// `cron`/`daily`/`weekday`/`weekend` must be set; the sugar forms expand to cron,
+/// and the result is validated with `croner`.
+fn resolve_schedule(
+    name: &str,
+    raw: &RawSchedule,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let at = format!("schedule '{name}'");
+    // Collect whichever field is populated, as (label, desugared-cron).
+    let mut forms: Vec<String> = Vec::new();
+    if let Some(expr) = &raw.cron {
+        forms.push(expr.clone());
+    }
+    for (field, dow) in [
+        (&raw.daily, "*"),
+        (&raw.weekday, "1-5"),
+        (&raw.weekend, "0,6"),
+    ] {
+        if let Some(hhmm) = field {
+            forms.push(desugar_time(hhmm, dow, &at, diags)?);
+        }
+    }
+
+    let cron = match forms.len() {
+        1 => forms.pop().unwrap(),
+        0 => {
+            diags.push(
+                Diagnostic::error(
+                    "E_BAD_SCHEDULE",
+                    "schedule needs one of: cron, daily, weekday, weekend",
+                )
+                .at(at),
+            );
+            return None;
+        }
+        _ => {
+            diags.push(
+                Diagnostic::error(
+                    "E_BAD_SCHEDULE",
+                    "schedule must set exactly one of: cron, daily, weekday, weekend",
+                )
+                .at(at),
+            );
+            return None;
+        }
+    };
+
+    // Validate the final expression (raw or desugared) against the cron parser.
+    if let Err(e) = croner::Cron::from_str(&cron) {
+        diags.push(Diagnostic::error("E_BAD_CRON", format!("invalid cron '{cron}': {e}")).at(at));
+        return None;
+    }
+    Some(cron)
+}
+
+/// `"HH:MM"` + a day-of-week field → a `"M H * * <dow>"` cron expression.
+fn desugar_time(hhmm: &str, dow: &str, at: &str, diags: &mut Vec<Diagnostic>) -> Option<String> {
+    if let Some((h, m)) = hhmm.trim().split_once(':') {
+        if let (Ok(h), Ok(m)) = (h.trim().parse::<u16>(), m.trim().parse::<u16>()) {
+            if h < 24 && m < 60 {
+                return Some(format!("{m} {h} * * {dow}"));
+            }
+        }
+    }
+    diags.push(
+        Diagnostic::error("E_BAD_TIME", format!("invalid time '{hhmm}' (expected HH:MM)"))
+            .at(at.to_string()),
+    );
+    None
 }

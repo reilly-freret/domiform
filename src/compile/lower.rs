@@ -24,7 +24,7 @@ use crate::compile::ast::{
 };
 use crate::compile::diagnostic::Diagnostic;
 use crate::compile::resolve::DeviceDef;
-use crate::ids::{ActionId, DeviceId, SceneId};
+use crate::ids::{ActionId, DeviceId, ScheduleId, SceneId};
 use crate::model::{CapabilityKind, Command, Millis, TimerKey};
 use crate::rule::{CmpOp, Condition, Trigger};
 
@@ -33,6 +33,7 @@ pub(crate) struct Lowerer<'a> {
     pub devices: &'a [DeviceDef],
     pub device_index: &'a HashMap<String, DeviceId>,
     pub scene_index: &'a HashMap<String, SceneId>,
+    pub schedule_index: &'a HashMap<String, ScheduleId>,
     /// Synthetic device backing `sun_up` / `time_*` conditions.
     pub clock_device: DeviceId,
     pub diags: &'a mut Vec<Diagnostic>,
@@ -40,6 +41,8 @@ pub(crate) struct Lowerer<'a> {
     pub scheduled_keys: &'a mut HashSet<String>,
     pub referenced_keys: &'a mut HashSet<String>,
     pub used_scenes: &'a mut HashSet<SceneId>,
+    /// Schedules a `schedule:` trigger references, for the unused-schedule lint.
+    pub referenced_schedules: &'a mut HashSet<ScheduleId>,
 }
 
 impl Lowerer<'_> {
@@ -170,6 +173,23 @@ impl Lowerer<'_> {
                 let key = self.as_name(&payload, "timer", at)?;
                 self.referenced_keys.insert(key.clone());
                 Trigger::Timer { key: TimerKey(key) }
+            }
+            "schedule" => {
+                let name = self.as_name(&payload, "schedule", at)?;
+                match self.schedule_index.get(&name) {
+                    Some(&schedule) => {
+                        self.referenced_schedules.insert(schedule);
+                        Trigger::Time { schedule }
+                    }
+                    None => {
+                        self.error(
+                            "E_UNKNOWN_SCHEDULE",
+                            format!("unknown schedule '{name}'"),
+                            at,
+                        );
+                        return None;
+                    }
+                }
             }
             "command_failed" => {
                 let spec = self.as_name(&payload, "command_failed", at)?;

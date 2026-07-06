@@ -15,18 +15,17 @@ pub mod resolve;
 
 pub use diagnostic::{CompileErrors, Diagnostic, Severity};
 pub use resolve::{
-    AdapterDef, AdapterKind, CompiledConfig, CompiledScene, DeviceDef, DeviceEvent, DeviceMetadata,
-    SystemConfig,
+    AdapterDef, AdapterKind, CompiledConfig, CompiledSchedule, CompiledScene, DeviceDef,
+    DeviceEvent, DeviceMetadata, SystemConfig,
 };
+
+use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::adapters::{Adapter, ClockAdapter, MockDeviceAdapter};
 use crate::engine::Engine;
 use crate::ids::DeviceId;
 use crate::wake::Waker;
-
-// Placeholder solar window until real solar math from system lat/long lands.
-const DEFAULT_SUNRISE_MIN: u16 = 6 * 60;
-const DEFAULT_SUNSET_MIN: u16 = 18 * 60;
 
 /// Parse and resolve config text into a `CompiledConfig`, or return every
 /// diagnostic found. A syntax error short-circuits to a single `E_PARSE`.
@@ -59,7 +58,27 @@ pub fn build_engine(cfg: &CompiledConfig) -> Engine {
 /// real-time host can block until inbound I/O arrives instead of polling. Pass
 /// `None` (what `build_engine` does) when driving the engine by hand — tests and
 /// one-shot tools don't need it.
+///
+/// Seeds the clock from the real wall clock ([`SystemTime::now`]). Use
+/// [`build_engine_at`] to inject a fixed boot epoch for deterministic time tests.
 pub fn build_engine_with_waker(cfg: &CompiledConfig, waker: Option<Waker>) -> Engine {
+    build_engine_at(cfg, waker, now_unix_ms())
+}
+
+/// The current Unix time in ms, or `0` if the clock is somehow before the epoch.
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Like [`build_engine_with_waker`], but with an explicit `boot_epoch_ms` (real
+/// Unix time, ms) for the clock adapter. This is the injection point that keeps
+/// wall-clock time out of the deterministic core: the engine's virtual clock
+/// starts at 0 and the wall instant is `boot_epoch_ms + engine_now`, so a test
+/// that passes a fixed epoch and drives `advance` by hand is fully replayable.
+pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms: i64) -> Engine {
     let mut engine = Engine::new();
 
     // Group devices by their config adapter so each adapter can be built with
@@ -80,12 +99,20 @@ pub fn build_engine_with_waker(cfg: &CompiledConfig, waker: Option<Waker>) -> En
         engine.bind_device(device.id, runtime_idx[device.adapter]);
     }
 
-    // The synthetic clock device, backed by a real clock adapter.
-    let clock_idx = engine.add_adapter(Box::new(ClockAdapter::new(
+    // The synthetic clock device, backed by a real clock adapter seeded with the
+    // boot epoch, configured timezone (already validated in `resolve`), and
+    // lat/long for the solar ephemeris. It also fires the wall-clock schedules.
+    let tz = chrono_tz::Tz::from_str(&cfg.system.timezone).unwrap_or(chrono_tz::Tz::UTC);
+    let schedules = compiled_schedules(cfg);
+    let clock = ClockAdapter::new(
         cfg.clock_device(),
-        DEFAULT_SUNRISE_MIN,
-        DEFAULT_SUNSET_MIN,
-    )));
+        boot_epoch_ms,
+        tz,
+        cfg.system.latitude,
+        cfg.system.longitude,
+    )
+    .with_schedules(schedules);
+    let clock_idx = engine.add_adapter(Box::new(clock));
     engine.bind_device(cfg.clock_device(), clock_idx);
 
     for scene in &cfg.scenes {
@@ -96,6 +123,16 @@ pub fn build_engine_with_waker(cfg: &CompiledConfig, waker: Option<Waker>) -> En
     }
 
     engine
+}
+
+/// Parse each compiled schedule's cron string back into a `croner::Cron` for the
+/// clock adapter. `resolve` already validated every expression, so a parse
+/// failure here is impossible — such an entry is dropped rather than panicking.
+fn compiled_schedules(cfg: &CompiledConfig) -> Vec<(crate::ids::ScheduleId, croner::Cron)> {
+    cfg.schedules
+        .iter()
+        .filter_map(|s| croner::Cron::from_str(&s.cron).ok().map(|cron| (s.id, cron)))
+        .collect()
 }
 
 /// Build one runtime adapter for a config adapter and its devices. Every protocol

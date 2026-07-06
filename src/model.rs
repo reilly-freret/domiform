@@ -38,7 +38,7 @@ pub enum CapabilityState {
     Occupancy(bool),
     Battery(u8),
     TimeOfDay(u16), // minutes since local midnight, 0..1440
-    SunUp(bool),    // false = after sunset / before sunrise (skeleton: threshold-based)
+    SunUp(bool),    // false = after sunset / before sunrise (real solar ephemeris)
 }
 
 impl CapabilityState {

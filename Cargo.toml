@@ -21,6 +21,18 @@ serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net"] }
 tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Wall-clock math for the clock adapter, all offline. `chrono` deliberately omits
+# the `clock` feature: the deterministic core never reads the wall clock itself —
+# the boot epoch is captured once in `main.rs` and injected. `chrono-tz` compiles
+# the IANA tz database into the binary (no system tzdata); `sunrise` is pure solar
+# math from lat/lon/date; `croner` parses cron and computes next occurrences.
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+chrono-tz = "0.10.4"
+sunrise = "3.0.0"
+croner = "3.0.1"
 
 [dev-dependencies]
 serde_json = "1.0.150"
+# Integration tests build a `ClockAdapter` directly with a fixed boot epoch + tz.
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+chrono-tz = "0.10.4"

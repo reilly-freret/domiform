@@ -31,8 +31,29 @@ pub struct RawConfig {
     pub devices: BTreeMap<String, RawDevice>,
     #[serde(default)]
     pub scenes: BTreeMap<String, Vec<Value>>,
+    /// Wall-clock schedules that fire `TimeReached` events. `BTreeMap` keeps
+    /// `ScheduleId` interning deterministic, like every other section.
+    #[serde(default)]
+    pub schedules: BTreeMap<String, RawSchedule>,
     #[serde(default)]
     pub rules: BTreeMap<String, RawRule>,
+}
+
+/// One schedule entry. Exactly one field is set: `cron` is the raw 5-field escape
+/// hatch; `daily`/`weekday`/`weekend` are `"HH:MM"` sugar that desugars to cron in
+/// `resolve`. `deny_unknown_fields` turns a mistyped key into a compile error;
+/// "exactly one" is checked in `resolve` (serde can't express it here).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSchedule {
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default)]
+    pub daily: Option<String>,
+    #[serde(default)]
+    pub weekday: Option<String>,
+    #[serde(default)]
+    pub weekend: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

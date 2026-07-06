@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Wall-clock schedules + real time-of-day / sun. Uses a `mock` adapter, so it
+# runs with no broker or hardware — good for watching the clock drive rules:
+#
+#     cargo run -- -c examples/schedules.yaml -v
+#
+# With `-v` you'll see the clock report the machine's real local time and sun
+# state (in the timezone below), and the `heartbeat` schedule fire a TimeReached
+# every minute.
+
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  demo:
+    type: mock
+
+devices:
+  porch_light:
+    adapter: demo
+    capabilities: [switch]
+
+schedules:
+  # Friendly sugar (desugars to cron):
+  wake:      { daily: "06:40" }     # every day at 06:40 local
+  workday:   { weekday: "08:00" }   # Mon–Fri at 08:00
+  # Raw cron escape hatch — fires every minute, so a demo run shows it quickly:
+  heartbeat: { cron: "* * * * *" }
+
+rules:
+  # Turn the porch light on at the morning schedule, but only while it's dark.
+  morning_on:
+    when: { schedule: wake }
+    if:   { sun_up: false }
+    then: [ { turn_on: porch_light } ]
+
+  # A workday reminder scene could go here; for the demo we just toggle.
+  workday_ping:
+    when: { schedule: workday }
+    then: [ { toggle: porch_light } ]
+
+  # The heartbeat proves the clock is firing schedules once a minute.
+  heartbeat_toggle:
+    when: { schedule: heartbeat }
+    then: [ { toggle: porch_light } ]

@@ -7,7 +7,8 @@
 
 system:
   timezone: America/New_York
-  # Used by the clock/sun adapter once real solar math lands.
+  # Drive the clock/sun adapter: real time-of-day in this tz, and real
+  # sunrise/sunset from these coordinates (so `sun_up` below is accurate).
   latitude: 40.71
   longitude: -74.01
 

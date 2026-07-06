@@ -2,7 +2,17 @@
 //! types, and executed — plus the rule-level static checks that make config
 //! feel like a compiled program.
 
-use domiform::{build_engine, compile_str, Event};
+use chrono::{TimeZone, Utc};
+use domiform::{build_engine, build_engine_at, compile_str, Event};
+
+/// A fixed UTC-midnight boot epoch (equator/UTC config → sunrise ~06:00, sunset
+/// ~18:00), so `sun_up` advances are deterministic instead of tracking the wall
+/// clock the test happens to run at.
+fn boot_midnight() -> i64 {
+    Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0)
+        .unwrap()
+        .timestamp_millis()
+}
 
 /// A dark-aware motion light with a re-triggerable off-timer — the exact
 /// automation we pressure-tested by hand, now written entirely in config.
@@ -53,7 +63,7 @@ fn full_automation_runs_from_yaml() {
     let motion = cfg.device_id("hallway_motion").unwrap();
     let light = cfg.device_id("hallway_light").unwrap();
 
-    let mut engine = build_engine(&cfg);
+    let mut engine = build_engine_at(&cfg, None, boot_midnight());
     engine.start(); // boot at 00:00 → clock reports SunUp(false), i.e. dark
 
     // Motion while dark → light on (the `sun_up: false` guard passed).
@@ -97,7 +107,7 @@ fn daylight_guard_suppresses_the_rule() {
     let motion = cfg.device_id("hallway_motion").unwrap();
     let light = cfg.device_id("hallway_light").unwrap();
 
-    let mut engine = build_engine(&cfg);
+    let mut engine = build_engine_at(&cfg, None, boot_midnight());
     engine.start();
     engine.advance(12 * 60 * 60 * 1000); // noon → SunUp(true)
 

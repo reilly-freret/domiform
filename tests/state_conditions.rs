@@ -5,6 +5,8 @@
 //! This is the load-bearing claim for "rules are pure and testable": the rule
 //! never calls a clock; it reads `SunUp` from the store like any other state.
 
+use chrono::{TimeZone, Utc};
+use chrono_tz::Tz;
 use domiform::ids::DeviceId;
 use domiform::{
     CapabilityKind, ClockAdapter, Command, Condition, Engine, Event, MockDeviceAdapter, Rule,
@@ -15,9 +17,16 @@ const MOTION: DeviceId = DeviceId(1);
 const LIGHT: DeviceId = DeviceId(2);
 const SUN: DeviceId = DeviceId(3);
 
-const SUNRISE: u16 = 6 * 60; // 06:00
-const SUNSET: u16 = 18 * 60; // 18:00
 const MINUTE_MS: u64 = 60 * 1000;
+
+/// Boot at a UTC midnight on the equator: the clock's real ephemeris then puts
+/// sunrise ~06:00 and sunset ~18:00, so the test's noon/19:00 advances land
+/// squarely in day and night. Fixed epoch → deterministic replay.
+fn boot_epoch_ms() -> i64 {
+    Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0)
+        .unwrap()
+        .timestamp_millis()
+}
 
 /// Hallway light comes on with motion — but only while the sun is down.
 fn build() -> Engine {
@@ -28,7 +37,13 @@ fn build() -> Engine {
 
     // The clock adapter backs the synthetic SUN device. It is never bound for
     // commands — it is a read-only state source.
-    engine.add_adapter(Box::new(ClockAdapter::new(SUN, SUNRISE, SUNSET)));
+    engine.add_adapter(Box::new(ClockAdapter::new(
+        SUN,
+        boot_epoch_ms(),
+        Tz::UTC,
+        0.0,
+        0.0,
+    )));
 
     engine.add_rule(Rule::new(
         RuleId(1),

@@ -35,7 +35,8 @@ pub use adapters::{
     Zigbee2MqttAdapter,
 };
 pub use compile::{
-    build_engine, build_engine_with_waker, compile_str, CompileErrors, CompiledConfig, Diagnostic,
+    build_engine, build_engine_at, build_engine_with_waker, compile_str, CompileErrors,
+    CompiledConfig, Diagnostic,
 };
 pub use engine::{Engine, RetryPolicy};
 pub use ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};

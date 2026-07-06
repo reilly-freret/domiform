@@ -25,6 +25,11 @@
         "items": { "$ref": "#/$defs/command" }
       }
     },
+    "schedules": {
+      "type": "object",
+      "description": "Named wall-clock schedules that fire `TimeReached` events. Reference one from a rule's `when: { schedule: <name> }`.",
+      "additionalProperties": { "$ref": "#/$defs/schedule" }
+    },
     "rules": {
       "type": "object",
       "description": "Named rules: trigger + optional condition + commands.",
@@ -141,6 +146,7 @@
         "occupancy": { "type": "string", "description": "Device became occupied." },
         "occupancy_clear": { "type": "string", "description": "Device occupancy cleared." },
         "timer": { "type": "string", "description": "A relative timer with this key elapsed." },
+        "schedule": { "type": "string", "description": "A wall-clock schedule (from `schedules:`) came due." },
         "command_failed": {
           "type": "string",
           "description": "A device name, or `any`/`*` for any command failure."
@@ -242,6 +248,20 @@
       "type": "string",
       "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
       "description": "24-hour HH:MM."
+    },
+
+    "schedule": {
+      "type": "object",
+      "$comment": "Exactly one of cron/daily/weekday/weekend. The sugar forms desugar to a 5-field cron at compile time.",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "cron": { "type": "string", "description": "Raw 5-field cron: `min hour dom month dow` (dow 0/7=Sun)." },
+        "daily": { "$ref": "#/$defs/timeOfDay" },
+        "weekday": { "$ref": "#/$defs/timeOfDay" },
+        "weekend": { "$ref": "#/$defs/timeOfDay" }
+      }
     }
   }
 }
