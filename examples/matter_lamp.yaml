@@ -27,7 +27,7 @@ devices:
     address: moes_battery_candy_bar_a
     capabilities: []
     events:
-      single_press_1: 1_single 
+      single_press_1: 1_single
 
   lr_floor_lamp_branch:
     adapter: matter
@@ -55,12 +55,12 @@ scenes:
 rules: 
   lr_floor_lamp_on:
     when: { event: remote.single_press_1 }
-    if: { switch_is: { device: lr_floor_lamp_branch, on: false } }
+    if: { switch_is: { device: lr_floor_lamp_branch, is_on: false } }
     then:
       - activate_scene: lr_floor_lamp_on
 
   lr_floor_lamp_off:
     when: { event: remote.single_press_1 }
-    if: { switch_is: { device: lr_floor_lamp_branch, on: true } }
+    if: { switch_is: { device: lr_floor_lamp_branch, is_on: true } }
     then:
       - activate_scene: lr_floor_lamp_off

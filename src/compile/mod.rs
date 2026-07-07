@@ -15,7 +15,7 @@ pub mod resolve;
 
 pub use diagnostic::{CompileErrors, Diagnostic, Severity};
 pub use resolve::{
-    AdapterDef, AdapterKind, CompiledConfig, CompiledSchedule, CompiledScene, DeviceDef,
+    AdapterDef, AdapterKind, CompiledConfig, CompiledScene, CompiledSchedule, DeviceDef,
     DeviceEvent, DeviceMetadata, SystemConfig,
 };
 
@@ -131,7 +131,11 @@ pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms
 fn compiled_schedules(cfg: &CompiledConfig) -> Vec<(crate::ids::ScheduleId, croner::Cron)> {
     cfg.schedules
         .iter()
-        .filter_map(|s| croner::Cron::from_str(&s.cron).ok().map(|cron| (s.id, cron)))
+        .filter_map(|s| {
+            croner::Cron::from_str(&s.cron)
+                .ok()
+                .map(|cron| (s.id, cron))
+        })
         .collect()
 }
 

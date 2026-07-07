@@ -12,7 +12,7 @@ use std::str::FromStr;
 use crate::compile::ast::{RawAdapter, RawConfig, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
-use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, ScheduleId, SceneId};
+use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
 use crate::model::{CapabilityKind, Command};
 use crate::rule::Rule;
 
@@ -271,10 +271,17 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
                 ),
             }
         }
-        if raw_device.capabilities.is_empty() {
+        // A device with no capabilities *and* no events can neither be commanded
+        // nor trigger a rule — inert, and almost certainly a mistake. But an
+        // event-only device (a button/remote declaring `events:` with no
+        // `capabilities:`) is a normal, intentional shape, so don't warn there.
+        if raw_device.capabilities.is_empty() && raw_device.events.is_empty() {
             diags.push(
-                Diagnostic::warning("E_NO_CAPABILITIES", "device declares no capabilities")
-                    .at(at.clone()),
+                Diagnostic::warning(
+                    "E_INERT_DEVICE",
+                    "device declares neither capabilities nor events, so it can't be commanded or trigger rules",
+                )
+                .at(at.clone()),
             );
         }
 
@@ -500,11 +507,7 @@ fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
 /// Desugar one schedule entry to a validated 5-field cron string. Exactly one of
 /// `cron`/`daily`/`weekday`/`weekend` must be set; the sugar forms expand to cron,
 /// and the result is validated with `croner`.
-fn resolve_schedule(
-    name: &str,
-    raw: &RawSchedule,
-    diags: &mut Vec<Diagnostic>,
-) -> Option<String> {
+fn resolve_schedule(name: &str, raw: &RawSchedule, diags: &mut Vec<Diagnostic>) -> Option<String> {
     let at = format!("schedule '{name}'");
     // Collect whichever field is populated, as (label, desugared-cron).
     let mut forms: Vec<String> = Vec::new();
@@ -563,8 +566,11 @@ fn desugar_time(hhmm: &str, dow: &str, at: &str, diags: &mut Vec<Diagnostic>) ->
         }
     }
     diags.push(
-        Diagnostic::error("E_BAD_TIME", format!("invalid time '{hhmm}' (expected HH:MM)"))
-            .at(at.to_string()),
+        Diagnostic::error(
+            "E_BAD_TIME",
+            format!("invalid time '{hhmm}' (expected HH:MM)"),
+        )
+        .at(at.to_string()),
     );
     None
 }

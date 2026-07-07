@@ -93,7 +93,7 @@
         "adapter": { "type": "string", "description": "Name of an entry in `adapters`." },
         "address": {
           "type": "string",
-          "description": "Protocol address. For zigbee2mqtt, the friendly_name; for matter, the decimal node_id (required there)."
+          "description": "Protocol address. Required for matter (the decimal node_id). Optional for zigbee2mqtt (the friendly_name; defaults to the IEEE address). Unused for mock."
         },
         "endpoint": {
           "type": "integer",
@@ -149,7 +149,7 @@
         "schedule": { "type": "string", "description": "A wall-clock schedule (from `schedules:`) came due." },
         "command_failed": {
           "type": "string",
-          "description": "A device name, or `any`/`*` for any command failure."
+          "description": "A device name, or `*` for any command failure."
         }
       }
     },
@@ -167,10 +167,10 @@
         "switch_is": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["device", "on"],
+          "required": ["device", "is_on"],
           "properties": {
             "device": { "type": "string" },
-            "on": { "type": "boolean" }
+            "is_on": { "type": "boolean" }
           }
         },
         "occupancy_is": {
@@ -202,26 +202,26 @@
           "required": ["device", "value"],
           "properties": {
             "device": { "type": "string" },
-            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." },
+            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Absolute brightness percent (0–100)." },
             "transition": { "$ref": "#/$defs/duration" }
           }
         },
         "decrease_brightness": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["device", "value"],
+          "required": ["device", "by"],
           "properties": {
             "device": { "type": "string" },
-            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." }
+            "by": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage points to subtract from current brightness." }
           }
         },
         "increase_brightness": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["device", "value"],
+          "required": ["device", "by"],
           "properties": {
             "device": { "type": "string" },
-            "value": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percent." }
+            "by": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage points to add to current brightness." }
           }
         },
         "activate_scene": { "type": "string", "description": "Scene name." },

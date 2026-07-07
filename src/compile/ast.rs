@@ -139,6 +139,7 @@ pub struct RawRule {
 #[serde(deny_unknown_fields)]
 pub struct RawSwitchIs {
     pub device: String,
+    #[serde(rename = "is_on")]
     pub on: bool,
 }
 
@@ -163,6 +164,7 @@ pub struct RawSetBrightness {
 #[serde(deny_unknown_fields)]
 pub struct RawDecreaseBrightness {
     pub device: String,
+    #[serde(rename = "by")]
     pub value: u8,
 }
 
@@ -170,6 +172,7 @@ pub struct RawDecreaseBrightness {
 #[serde(deny_unknown_fields)]
 pub struct RawIncreaseBrightness {
     pub device: String,
+    #[serde(rename = "by")]
     pub value: u8,
 }
 

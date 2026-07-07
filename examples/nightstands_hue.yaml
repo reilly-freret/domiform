@@ -56,13 +56,13 @@ rules:
     when: 
       event: kennedy_dimmer.down
     then:
-      - decrease_brightness: { device: kennedy_nightstand, value: 20 }
+      - decrease_brightness: { device: kennedy_nightstand, by: 20 }
 
   kennedy_brighten:
     when: 
       event: kennedy_dimmer.up
     then:
-      - increase_brightness: { device: kennedy_nightstand, value: 20 }
+      - increase_brightness: { device: kennedy_nightstand, by: 20 }
   
   kennedy_both_off:
     when:
@@ -70,7 +70,7 @@ rules:
     if:
       switch_is: 
         device: kennedy_nightstand
-        on: true
+        is_on: true
     then:
       - turn_off: kennedy_nightstand
       - turn_off: reilly_nightstand
@@ -81,7 +81,7 @@ rules:
     if:
       switch_is: 
         device: kennedy_nightstand
-        on: false
+        is_on: false
     then:
       - set_brightness: { device: kennedy_nightstand, value: 100 }
       - set_brightness: { device: reilly_nightstand, value: 100 }
@@ -96,13 +96,13 @@ rules:
     when: 
       event: reilly_dimmer.down
     then:
-      - decrease_brightness: { device: reilly_nightstand, value: 20 }
+      - decrease_brightness: { device: reilly_nightstand, by: 20 }
 
   reilly_brighten:
     when: 
       event: reilly_dimmer.up
     then:
-      - increase_brightness: { device: reilly_nightstand, value: 20 }
+      - increase_brightness: { device: reilly_nightstand, by: 20 }
   
   reilly_both_off:
     when:
@@ -110,7 +110,7 @@ rules:
     if:
       switch_is: 
         device: reilly_nightstand
-        on: true
+        is_on: true
     then:
       - turn_off: kennedy_nightstand
       - turn_off: reilly_nightstand
@@ -119,9 +119,9 @@ rules:
     when:
       event: reilly_dimmer.off
     if:
-      switch_is: 
-        device: kennedy_nightstand
-        on: false
+      switch_is:
+        device: reilly_nightstand
+        is_on: false
     then:
       - set_brightness: { device: kennedy_nightstand, value: 100 }
       - set_brightness: { device: reilly_nightstand, value: 100 }
@@ -132,7 +132,7 @@ rules:
     if:
       switch_is: 
         device: kennedy_nightstand
-        on: true
+        is_on: true
     then:
       - turn_off: kennedy_nightstand
       - turn_off: reilly_nightstand
@@ -143,7 +143,7 @@ rules:
     if:
       switch_is: 
         device: kennedy_nightstand
-        on: false
+        is_on: false
     then:
       - set_brightness: { device: kennedy_nightstand, value: 100 }
       - set_brightness: { device: reilly_nightstand, value: 100 }

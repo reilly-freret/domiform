@@ -2,9 +2,11 @@
 //! the deterministic engine, driving real adapters in real time.
 //!
 //! ```text
-//!   domiform                       # runs ./config.yaml
-//!   domiform -c examples/foo.yaml  # an explicit config path
-//!   domiform -c foo.yaml -v        # + a full per-event trace
+//!   domiform                        # runs ./config.yaml
+//!   domiform -c examples/foo.yaml   # an explicit config path
+//!   domiform -c foo.yaml -v         # + a full per-event trace
+//!   domiform -c foo.yaml --check    # validate only, then exit (no engine/I/O)
+//!   domiform --check 'examples/*.yaml'   # validate many at once (glob)
 //! ```
 //!
 //! The real zigbee2mqtt / Matter transports are always compiled in; only
@@ -31,28 +33,40 @@ const MAX_SLEEP: Duration = Duration::from_secs(5);
 const DEFAULT_CONFIG: &str = "config.yaml";
 
 const HELP: &str = "\
-usage: domiform [-c <config.yaml>] [-v]
+usage: domiform [-c <config.yaml>] [--check] [-v]
+       domiform --check <config.yaml|glob> [<config.yaml|glob> ...]
 
   -c, --config <path>   config file to run (default: ./config.yaml)
+      --check           compile and report problems, then exit without running.
+                        Accepts multiple paths and globs (e.g. 'examples/*.yaml')
+                        and validates each; exits non-zero if any fails.
   -v, --verbose         trace every event, condition Truth, and dispatch
   -h, --help            show this help";
 
 struct Args {
-    config: String,
+    /// Config path(s)/glob pattern(s), in the order given. Empty means the
+    /// default. Multiple entries are only valid with `--check`.
+    configs: Vec<String>,
     verbose: bool,
+    /// Compile only: validate the config(s) and exit, without starting the
+    /// engine or touching any transport. Handy for editors, pre-commit hooks,
+    /// and CI. Only this mode accepts more than one config / a glob.
+    check: bool,
 }
 
 /// Hand-rolled arg parsing (no `clap` dependency): two flags and an optional
 /// bare path. Returns the help/usage text as the `Err` for `-h` and bad input.
 fn parse_args() -> Result<Args, String> {
-    let mut config: Option<String> = None;
+    let mut configs: Vec<String> = Vec::new();
     let mut verbose = false;
+    let mut check = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-v" | "--verbose" => verbose = true,
+            "--check" => check = true,
             "-c" | "--config" => {
-                config = Some(args.next().ok_or("`-c`/`--config` needs a path")?);
+                configs.push(args.next().ok_or("`-c`/`--config` needs a path")?);
             }
             "-h" | "--help" => {
                 // Help is success and belongs on stdout, not the error path.
@@ -62,15 +76,56 @@ fn parse_args() -> Result<Args, String> {
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown flag '{flag}'\n\n{HELP}"))
             }
-            // A bare positional path is accepted too, for convenience.
-            path if config.is_none() => config = Some(path.to_string()),
-            extra => return Err(format!("unexpected argument '{extra}'\n\n{HELP}")),
+            // Bare positional paths/globs are accepted too, for convenience.
+            path => configs.push(path.to_string()),
         }
     }
     Ok(Args {
-        config: config.unwrap_or_else(|| DEFAULT_CONFIG.to_string()),
+        configs,
         verbose,
+        check,
     })
+}
+
+/// Whether a config argument looks like a glob pattern (vs. a literal path).
+/// The one place that classifies `*?[`, so run-mode rejection and check-mode
+/// expansion can't disagree about what counts as a glob.
+fn is_glob(pat: &str) -> bool {
+    pat.contains(['*', '?', '['])
+}
+
+/// Expand config path(s)/glob pattern(s) into concrete files, in the order the
+/// patterns were given and deduped (a file matched by two patterns is checked
+/// once). A pattern with no glob metacharacters is passed through as a literal
+/// path, so a plain filename still reports "not found" rather than "no match".
+/// A glob that matches nothing is an error — it usually means a typo, and we'd
+/// rather say so than silently validate zero files.
+fn expand_configs(patterns: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for pat in patterns {
+        // No glob metacharacters => a literal path; existence is checked later.
+        if !is_glob(pat) {
+            if seen.insert(pat.clone()) {
+                out.push(pat.clone());
+            }
+            continue;
+        }
+        let entries = glob::glob(pat).map_err(|e| format!("bad pattern '{pat}': {e}"))?;
+        let mut matched = 0usize;
+        for entry in entries {
+            let path = entry.map_err(|e| format!("reading '{pat}': {e}"))?;
+            let s = path.to_string_lossy().into_owned();
+            matched += 1;
+            if seen.insert(s.clone()) {
+                out.push(s);
+            }
+        }
+        if matched == 0 {
+            return Err(format!("no files match pattern '{pat}'"));
+        }
+    }
+    Ok(out)
 }
 
 fn main() -> ExitCode {
@@ -82,15 +137,101 @@ fn main() -> ExitCode {
         }
     };
 
+    if args.check {
+        return run_check(&args.configs);
+    }
+
+    // Run mode takes exactly one config; globs / multiple paths are check-only.
+    let config = match args.configs.as_slice() {
+        [] => DEFAULT_CONFIG.to_string(),
+        [one] if !is_glob(one) => one.clone(),
+        [one] => {
+            eprintln!("'{one}' looks like a glob; globs are only supported with --check");
+            return ExitCode::from(2);
+        }
+        _ => {
+            eprintln!("only one config can be run; pass --check to validate several");
+            return ExitCode::from(2);
+        }
+    };
+    run_engine(&config, args.verbose)
+}
+
+/// `--check`: compile each resolved config and report per-file, then exit
+/// non-zero if any failed. Never builds an engine or touches a transport, so it
+/// validates broker-backed configs offline. Warnings don't fail the check; only
+/// compile errors and unreadable/missing files do.
+fn run_check(patterns: &[String]) -> ExitCode {
+    // With no path given, check the default config (mirrors run mode's default).
+    let owned_default;
+    let patterns = if patterns.is_empty() {
+        owned_default = vec![DEFAULT_CONFIG.to_string()];
+        &owned_default
+    } else {
+        patterns
+    };
+
+    let files = match expand_configs(patterns) {
+        Ok(f) => f,
+        Err(msg) => {
+            eprintln!("{msg}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for path in &files {
+        match check_one(path) {
+            Ok(()) => ok += 1,
+            Err(msg) => {
+                eprintln!("{msg}");
+                failed += 1;
+            }
+        }
+    }
+
+    // Only summarize when there's more than one file — a single check reads
+    // cleaner as just its own `ok:`/error line.
+    if files.len() > 1 {
+        println!("checked {} file(s): {ok} ok, {failed} failed", files.len());
+    }
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Compile a single config for `--check`. Prints its own `ok:`/error line(s) and
+/// returns Ok on success. A missing/unreadable file is an error here (returned
+/// as the `Err` string) rather than a hard exit, so a batch check keeps going.
+fn check_one(path: &str) -> Result<(), String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{path}: could not read: {e}"))?;
+    let cfg = compile_str(&src).map_err(|errors| format!("{path}:\n{errors}"))?;
+    for w in &cfg.warnings {
+        eprintln!("{path}: {w}");
+    }
+    println!(
+        "ok: {path} is valid ({} device(s), {} scene(s), {} rule(s))",
+        cfg.devices.len(),
+        cfg.scenes.len(),
+        cfg.rules.len()
+    );
+    Ok(())
+}
+
+/// Compile one config and run it on the engine in real time (the normal mode).
+fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // Missing config is a usage error, not a runtime one — fail clearly.
-    if !Path::new(&args.config).exists() {
-        eprintln!("config file not found: {}", args.config);
+    if !Path::new(config).exists() {
+        eprintln!("config file not found: {config}");
         return ExitCode::from(2);
     }
-    let src = match std::fs::read_to_string(&args.config) {
+    let src = match std::fs::read_to_string(config) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("could not read {}: {e}", args.config);
+            eprintln!("could not read {config}: {e}");
             return ExitCode::from(2);
         }
     };
@@ -119,7 +260,7 @@ fn main() -> ExitCode {
 
     // The stderr observer always logs failures; `-v` adds the full trace. Hand it
     // the compiler's name tables so lines read in config names, not raw ids.
-    let observer = if args.verbose {
+    let observer = if verbose {
         StderrObserver::verbose()
     } else {
         StderrObserver::new()
@@ -136,10 +277,7 @@ fn main() -> ExitCode {
     engine.set_observer(Box::new(observer));
 
     engine.start();
-    println!(
-        "running {}",
-        if args.verbose { "(verbose)" } else { "" }
-    );
+    println!("running {}", if verbose { "(verbose)" } else { "" });
 
     // Event-driven pump: block until the earlier of the next scheduled wake or an
     // inbound `Waker`, advance virtual time by the elapsed wall-clock, drain.

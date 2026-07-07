@@ -24,7 +24,7 @@ use crate::compile::ast::{
 };
 use crate::compile::diagnostic::Diagnostic;
 use crate::compile::resolve::DeviceDef;
-use crate::ids::{ActionId, DeviceId, ScheduleId, SceneId};
+use crate::ids::{ActionId, DeviceId, SceneId, ScheduleId};
 use crate::model::{CapabilityKind, Command, Millis, TimerKey};
 use crate::rule::{CmpOp, Condition, Trigger};
 
@@ -193,7 +193,7 @@ impl Lowerer<'_> {
             }
             "command_failed" => {
                 let spec = self.as_name(&payload, "command_failed", at)?;
-                let device = if spec == "any" || spec == "*" {
+                let device = if spec == "*" {
                     None
                 } else {
                     Some(self.resolve_device(&spec, at)?)

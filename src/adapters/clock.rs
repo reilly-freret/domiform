@@ -62,7 +62,13 @@ impl ClockAdapter {
     /// `boot_epoch_ms` is real Unix time (ms) captured once at startup; the
     /// wall instant is `boot_epoch_ms + engine_now`. `tz` is the configured
     /// timezone; `latitude`/`longitude` drive the solar ephemeris.
-    pub fn new(device: DeviceId, boot_epoch_ms: i64, tz: Tz, latitude: f64, longitude: f64) -> Self {
+    pub fn new(
+        device: DeviceId,
+        boot_epoch_ms: i64,
+        tz: Tz,
+        latitude: f64,
+        longitude: f64,
+    ) -> Self {
         ClockAdapter {
             device,
             boot_epoch_ms,
@@ -294,7 +300,9 @@ mod tests {
             .with_schedules(vec![(sched, cron)]);
 
         assert!(
-            c.tick(0).iter().all(|e| !matches!(e, Event::TimeReached { .. })),
+            c.tick(0)
+                .iter()
+                .all(|e| !matches!(e, Event::TimeReached { .. })),
             "nothing due at boot (06:00)"
         );
         // Advance to 06:40 → the schedule fires exactly once.
@@ -318,8 +326,8 @@ mod tests {
         let mut c = ClockAdapter::new(SUN, epoch(2024, 6, 1, 6, 39), Tz::UTC, 0.0, 0.0)
             .with_schedules(vec![(ScheduleId(1), cron)]);
         c.tick(0); // arm the schedule
-        // 06:40 is 60s away — sooner than... also 60s to the minute boundary.
-        // Move 30s in: boundary is 30s out, schedule (06:40) is 30s out — equal.
+                   // 06:40 is 60s away — sooner than... also 60s to the minute boundary.
+                   // Move 30s in: boundary is 30s out, schedule (06:40) is 30s out — equal.
         assert_eq!(c.next_wake(30_000), Some(30_000));
     }
 }
