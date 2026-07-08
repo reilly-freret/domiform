@@ -89,8 +89,8 @@
     },
 
     "capability": {
-      "enum": ["switch", "brightness", "color_temperature", "occupancy", "battery"],
-      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.)"
+      "enum": ["switch", "brightness", "color", "color_temperature", "occupancy", "battery"],
+      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.) `color` and `color_temperature` are independent — declaring one does not imply the other."
     },
 
     "device": {
@@ -230,6 +230,55 @@
           "properties": {
             "device": { "type": "string" },
             "by": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage points to add to current brightness." }
+          }
+        },
+        "set_color": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "color"],
+          "properties": {
+            "device": { "type": "string" },
+            "color": {
+              "description": "Chromatic color: `#RRGGBB` hex string or `{ r, g, b }` object (0–255 each).",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["r", "g", "b"],
+                  "properties": {
+                    "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+                    "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+                    "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+                  }
+                }
+              ]
+            },
+            "transition": { "$ref": "#/$defs/duration" }
+          }
+        },
+        "set_color_temperature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device"],
+          "properties": {
+            "device": { "type": "string" },
+            "kelvin": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 10000,
+              "description": "Correlated color temperature in kelvin (e.g. 2700 = warm white)."
+            },
+            "mireds": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 1000,
+              "description": "Color temperature in mireds (reciprocal megakelvin). Higher = warmer."
+            },
+            "transition": { "$ref": "#/$defs/duration" }
           }
         },
         "activate_scene": { "type": "string", "description": "Scene name." },

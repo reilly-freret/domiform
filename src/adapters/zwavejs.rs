@@ -238,6 +238,7 @@ const MULTILEVEL_ON: u16 = 255;
 // Command classes this adapter speaks (decimal). Named so the match arms read.
 const CC_BINARY_SWITCH: u16 = 0x25; // 37
 const CC_MULTILEVEL_SWITCH: u16 = 0x26; // 38
+const CC_COLOR_SWITCH: u16 = 0x33; // 51
 const CC_CENTRAL_SCENE: u16 = 0x5B; // 91
 const CC_NOTIFICATION: u16 = 0x71; // 113
 const CC_BATTERY: u16 = 0x80; // 128
@@ -290,6 +291,40 @@ pub fn command_to_set_value(kind: DeviceKind, cmd: &Command) -> Option<SetValue>
             value: json!(pct_to_zwave(*value)),
             transition: *transition,
         }),
+        (
+            _,
+            Command::SetColor {
+                r,
+                g,
+                b,
+                transition,
+                ..
+            },
+        ) => Some(SetValue {
+            command_class: CC_COLOR_SWITCH,
+            property: "targetColor".into(),
+            value: json!({ "red": r, "green": g, "blue": b }),
+            transition: *transition,
+        }),
+        (
+            _,
+            Command::SetColorTemperature {
+                mireds, transition, ..
+            },
+        ) => {
+            // Z-Wave Color Switch tunable-white spans two channels, so a color
+            // temperature is rendered as a warm/cold mix over 2700–6500 K. The
+            // config schema advertises a wider range (1000–10000 K); values
+            // outside the hardware band are clamped to the nearest bound by
+            // `color::mireds_to_warm_cold` — the bulb cannot render them.
+            let (warm, cold) = crate::color::mireds_to_warm_cold(*mireds);
+            Some(SetValue {
+                command_class: CC_COLOR_SWITCH,
+                property: "targetColor".into(),
+                value: json!({ "warmWhite": warm, "coldWhite": cold }),
+                transition: *transition,
+            })
+        }
         // Scenes/timers aren't device commands, and Z-Wave has no toggle — the
         // caller turns this `None` into a `Permanent` outcome (surfaced to the
         // `Observer`, not printed here).
@@ -362,6 +397,21 @@ pub fn update_to_events(
             device,
             state: CapabilityState::Battery(pct.min(100) as u8),
         }),
+        (CC_COLOR_SWITCH, "currentColor") => {
+            if let Some((r, g, b)) = parse_zwave_color(&u.value) {
+                return vec![Event::StateReported {
+                    device,
+                    state: CapabilityState::Color { r, g, b },
+                }];
+            }
+            if let Some(mireds) = parse_zwave_color_temp(&u.value) {
+                return vec![Event::StateReported {
+                    device,
+                    state: CapabilityState::ColorTemperature(mireds),
+                }];
+            }
+            return Vec::new();
+        }
         // Notification CC, Home Security: motion detection (7/8) → occupied,
         // idle (0) → clear. Other notification kinds (tamper, …) are ignored.
         (CC_NOTIFICATION, "Home Security") => match u.value.as_u64() {
@@ -387,6 +437,28 @@ fn normalize_button(key: &str) -> String {
     key.parse::<u32>()
         .map(|n| n.to_string())
         .unwrap_or_else(|_| key.to_string())
+}
+
+/// Extract sRGB from a Color Switch `currentColor` / `targetColor` object.
+fn parse_zwave_color(value: &Value) -> Option<(u8, u8, u8)> {
+    let obj = value.as_object()?;
+    let r = obj.get("red").and_then(Value::as_u64)?;
+    let g = obj.get("green").and_then(Value::as_u64)?;
+    let b = obj.get("blue").and_then(Value::as_u64)?;
+    if r <= 255 && g <= 255 && b <= 255 {
+        Some((r as u8, g as u8, b as u8))
+    } else {
+        None
+    }
+}
+
+/// Approximate mireds from a Color Switch warm/cold-white mix. Used when a
+/// device reports tunable-white channels instead of a direct mireds value.
+fn parse_zwave_color_temp(value: &Value) -> Option<u16> {
+    let obj = value.as_object()?;
+    let warm = obj.get("warmWhite").and_then(Value::as_u64)?;
+    let cold = obj.get("coldWhite").and_then(Value::as_u64)?;
+    crate::color::warm_cold_to_mireds(warm, cold)
 }
 
 // --- real transport ---------------------------------------------------------

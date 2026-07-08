@@ -50,6 +50,7 @@ fn read_attr(cap: CapabilityKind) -> Option<&'static str> {
     match cap {
         CapabilityKind::Switch => Some("state"),
         CapabilityKind::Brightness => Some("brightness"),
+        CapabilityKind::Color => Some("color"),
         CapabilityKind::ColorTemperature => Some("color_temp"),
         CapabilityKind::Occupancy
         | CapabilityKind::Battery
@@ -181,6 +182,15 @@ impl Adapter for Zigbee2MqttAdapter {
 // shared with the Matter adapter (same range) — see `adapters::{pct_to_level,
 // level_to_pct}`.
 
+/// Set the z2m `transition` field (seconds) from a millisecond fade time.
+/// z2m accepts fractional seconds, so we keep sub-second precision rather than
+/// integer-truncating a `500ms` fade to `0`.
+fn set_transition(body: &mut Value, transition: Option<Millis>) {
+    if let Some(ms) = transition {
+        body["transition"] = json!(ms as f64 / 1000.0);
+    }
+}
+
 /// Translate a canonical command into a z2m `<base>/<friendly>/set` publish.
 /// Returns `None` for commands not addressed to a device (scenes, timers).
 pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(String, Vec<u8>)> {
@@ -190,14 +200,29 @@ pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(
             value, transition, ..
         } => {
             let mut o = json!({ "brightness": pct_to_level(*value) });
-            if let Some(ms) = transition {
-                // z2m transition is in seconds.
-                o["transition"] = json!(ms / 1000);
-            }
+            set_transition(&mut o, *transition);
             o
         }
         Command::ToggleSwitch { .. } => {
             json!({ "state": "TOGGLE"})
+        }
+        Command::SetColor {
+            r,
+            g,
+            b,
+            transition,
+            ..
+        } => {
+            let mut o = json!({ "color": { "r": r, "g": g, "b": b } });
+            set_transition(&mut o, *transition);
+            o
+        }
+        Command::SetColorTemperature {
+            mireds, transition, ..
+        } => {
+            let mut o = json!({ "color_temp": mireds });
+            set_transition(&mut o, *transition);
+            o
         }
         // Not addressed to a z2m device (scenes/timers). The caller turns this
         // `None` into a `Permanent` outcome, which the engine surfaces to the
@@ -243,6 +268,20 @@ pub fn message_to_events(
             state: CapabilityState::Brightness(level_to_pct(b)),
         });
     }
+    if let Some(color) = json.get("color") {
+        if let Some((r, g, b)) = parse_z2m_color(color) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Color { r, g, b },
+            });
+        }
+    }
+    if let Some(ct) = json.get("color_temp").and_then(Value::as_u64) {
+        events.push(Event::StateReported {
+            device,
+            state: CapabilityState::ColorTemperature(ct.min(u16::MAX as u64) as u16),
+        });
+    }
     if let Some(occupied) = json.get("occupancy").and_then(Value::as_bool) {
         events.push(Event::OccupancyChanged { device, occupied });
     }
@@ -261,6 +300,24 @@ pub fn message_to_events(
         }
     }
     events
+}
+
+/// Extract sRGB from a z2m `color` object (`r`/`g`/`b` or nested `hex`).
+fn parse_z2m_color(color: &Value) -> Option<(u8, u8, u8)> {
+    if let (Some(r), Some(g), Some(b)) = (
+        color.get("r").and_then(Value::as_u64),
+        color.get("g").and_then(Value::as_u64),
+        color.get("b").and_then(Value::as_u64),
+    ) {
+        if r <= 255 && g <= 255 && b <= 255 {
+            return Some((r as u8, g as u8, b as u8));
+        }
+    }
+    let hex = color
+        .get("hex")
+        .and_then(Value::as_str)
+        .or_else(|| color.as_str())?;
+    crate::color::hex_to_rgb(hex)
 }
 
 // --- real transport ---------------------------------------------------------

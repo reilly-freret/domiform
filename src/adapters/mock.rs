@@ -47,6 +47,22 @@ impl Adapter for MockDeviceAdapter {
                     state: CapabilityState::Brightness(*value),
                 }])
             }
+            Command::SetColor {
+                device, r, g, b, ..
+            } => DispatchOutcome::Ok(vec![Event::StateReported {
+                device: *device,
+                state: CapabilityState::Color {
+                    r: *r,
+                    g: *g,
+                    b: *b,
+                },
+            }]),
+            Command::SetColorTemperature { device, mireds, .. } => {
+                DispatchOutcome::Ok(vec![Event::StateReported {
+                    device: *device,
+                    state: CapabilityState::ColorTemperature(*mireds),
+                }])
+            }
             _ => DispatchOutcome::ok(),
         }
     }

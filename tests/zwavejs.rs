@@ -441,6 +441,79 @@ fn outbound_brightness_scales_to_multilevel_with_transition() {
 }
 
 #[test]
+fn outbound_color_targets_color_switch() {
+    let c = FakeClient::default();
+    let mut a = adapter(&c);
+
+    a.dispatch(
+        &Command::SetColor {
+            device: BULB,
+            r: 255,
+            g: 0,
+            b: 128,
+            transition: None,
+        },
+        0,
+    );
+
+    let set = c.set();
+    assert_eq!(
+        set[0],
+        (
+            BULB_NODE,
+            ROOT,
+            SetValue {
+                command_class: 0x33,
+                property: "targetColor".into(),
+                value: json!({ "red": 255, "green": 0, "blue": 128 }),
+                transition: None,
+            }
+        )
+    );
+}
+
+#[test]
+fn outbound_color_temperature_targets_warm_cold_mix() {
+    let c = FakeClient::default();
+    let mut a = adapter(&c);
+
+    // 2700 K ≈ 370 mireds → warm white, no cold.
+    a.dispatch(
+        &Command::SetColorTemperature {
+            device: BULB,
+            mireds: 370,
+            transition: None,
+        },
+        0,
+    );
+
+    let set = c.set();
+    assert_eq!(set[0].2.value, json!({ "warmWhite": 255, "coldWhite": 0 }));
+}
+
+#[test]
+fn inbound_current_color_becomes_color_event() {
+    let c = FakeClient::default();
+    let mut a = adapter(&c);
+
+    c.update(
+        BULB_NODE,
+        0x33,
+        "currentColor",
+        json!({ "red": 10, "green": 20, "blue": 30 }),
+    );
+    let events = a.tick(0);
+    assert!(events.contains(&Event::StateReported {
+        device: BULB,
+        state: domiform::CapabilityState::Color {
+            r: 10,
+            g: 20,
+            b: 30
+        },
+    }));
+}
+
+#[test]
 fn raw_toggle_is_unsupported() {
     // Z-Wave has no toggle; a raw toggle only reaches an adapter when switch
     // state is unknown (the engine resolves it to SetSwitch otherwise).

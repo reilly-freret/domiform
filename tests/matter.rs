@@ -31,6 +31,9 @@ const LEVEL: u32 = 0x0008;
 const OCCUPANCY: u32 = 0x0406;
 const POWER_SOURCE: u32 = 0x002F;
 const BAT_PERCENT: u32 = 0x000C;
+const COLOR: u32 = 0x0300;
+const CURRENT_HUE: u32 = 0x0008;
+const CURRENT_SAT: u32 = 0x0009;
 
 /// Shared in-memory controller: tests feed inbound attribute reports and read
 /// back what the adapter invoked, while the adapter owns a clone as its seam.
@@ -108,6 +111,34 @@ fn inbound_onoff_and_level_become_events() {
         device: LAMP,
         state: domiform::CapabilityState::Brightness(100),
     }));
+}
+
+#[test]
+fn inbound_hue_and_saturation_fold_into_a_color_event() {
+    let c = FakeController::default();
+    let mut a = adapter(&c);
+
+    // Hue alone is not enough — Matter reports the two attributes separately,
+    // so no Color event fires until saturation arrives.
+    c.report(LAMP_NODE, EP, COLOR, CURRENT_HUE, json!(0));
+    let events = a.tick(0);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::StateReported { state, .. } if format!("{state:?}").contains("Color"))),
+        "hue alone should not emit a Color event, got {events:?}"
+    );
+
+    // Saturation completes the pair: hue 0 / sat 254 → pure red at full value.
+    c.report(LAMP_NODE, EP, COLOR, CURRENT_SAT, json!(254));
+    let events = a.tick(0);
+    assert!(
+        events.contains(&Event::StateReported {
+            device: LAMP,
+            state: domiform::CapabilityState::Color { r: 255, g: 0, b: 0 },
+        }),
+        "got {events:?}"
+    );
 }
 
 #[test]
@@ -192,6 +223,65 @@ fn outbound_brightness_scales_to_level() {
             ClusterCommand::MoveToLevel {
                 level: 127,
                 transition_ds: 20
+            }
+        )
+    );
+}
+
+#[test]
+fn outbound_color_invokes_hue_and_saturation() {
+    let c = FakeController::default();
+    let mut a = adapter(&c);
+
+    a.dispatch(
+        &Command::SetColor {
+            device: LAMP,
+            r: 255,
+            g: 0,
+            b: 0,
+            transition: Some(1000),
+        },
+        0,
+    );
+
+    let invoked = c.invoked();
+    assert!(matches!(
+        invoked[0],
+        (
+            LAMP_NODE,
+            EP,
+            ClusterCommand::MoveToHueAndSaturation {
+                hue: 0,
+                saturation: 254,
+                transition_ds: 10
+            }
+        )
+    ));
+}
+
+#[test]
+fn outbound_color_temperature_invokes_move_to_color_temp() {
+    let c = FakeController::default();
+    let mut a = adapter(&c);
+
+    a.dispatch(
+        &Command::SetColorTemperature {
+            device: LAMP,
+            mireds: 370,
+            transition: None,
+        },
+        0,
+    );
+
+    let invoked = c.invoked();
+    assert_eq!(
+        invoked[0],
+        (
+            LAMP_NODE,
+            EP,
+            ClusterCommand::MoveToColorTemperature {
+                mireds: 370,
+                transition_ds: 0
             }
         )
     );

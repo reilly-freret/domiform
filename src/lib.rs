@@ -42,6 +42,7 @@
 //!   adapter (pass-through or emulated) instead of forcing rules to sequence.
 
 pub mod adapters;
+pub mod color;
 pub mod compile;
 pub mod engine;
 pub mod ids;

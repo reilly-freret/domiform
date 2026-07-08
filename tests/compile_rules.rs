@@ -284,3 +284,75 @@ rules:
     .expect_err("wall declares no `bottom` event");
     assert!(format!("{errs}").contains("E_UNKNOWN_EVENT"), "got: {errs}");
 }
+
+#[test]
+fn color_commands_require_declared_capabilities() {
+    let errs = compile_str(
+        r##"
+adapters:
+  z: { type: mock }
+devices:
+  rgb:  { adapter: z, capabilities: [switch] }
+  ct:   { adapter: z, capabilities: [switch] }
+rules:
+  bad_rgb:
+    when: { timer: t }
+    then:
+      - set_color: { device: rgb, color: "#ff0000" }
+  bad_ct:
+    when: { timer: t }
+    then:
+      - set_color_temperature: { device: ct, kelvin: 2700 }
+"##,
+    )
+    .expect_err("missing color capabilities");
+    let codes: Vec<_> = errs.errors().map(|d| d.code).collect();
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|c| **c == "E_MISSING_CAPABILITY")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn color_formats_compile_to_runtime_commands() {
+    let cfg = compile_str(
+        r#"
+adapters:
+  z: { type: mock }
+devices:
+  lamp: { adapter: z, capabilities: [color, color_temperature] }
+rules:
+  go:
+    when: { timer: t }
+    then:
+      - set_color: { device: lamp, color: { r: 255, g: 128, b: 0 } }
+      - set_color_temperature: { device: lamp, kelvin: 4000 }
+"#,
+    )
+    .expect("should compile");
+
+    let lamp = cfg.device_id("lamp").unwrap();
+    let rule = &cfg.rules[0];
+    assert_eq!(
+        rule.commands[0],
+        domiform::Command::SetColor {
+            device: lamp,
+            r: 255,
+            g: 128,
+            b: 0,
+            transition: None,
+        }
+    );
+    // 1_000_000 / 4000 = 250 mireds
+    assert_eq!(
+        rule.commands[1],
+        domiform::Command::SetColorTemperature {
+            device: lamp,
+            mireds: 250,
+            transition: None,
+        }
+    );
+}

@@ -21,6 +21,14 @@ pub type Millis = u64;
 pub enum CapabilityKind {
     Switch,
     Brightness,
+    /// Chromatic color (RGB). Distinct from [`CapabilityKind::ColorTemperature`]:
+    /// a device may declare either, both, or neither — one does not imply the
+    /// other at compile time.
+    ///
+    /// Conditions that read color (e.g. `color_is`) are not implemented yet, but
+    /// every adapter already folds inbound reports into `CapabilityState::Color`
+    /// (sRGB), so the canonical read path exists when a condition form is added.
+    Color,
     ColorTemperature,
     Occupancy,
     Battery,
@@ -33,7 +41,8 @@ pub enum CapabilityKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CapabilityState {
     Switch(bool),
-    Brightness(u8),        // 0..=100
+    Brightness(u8), // 0..=100
+    Color { r: u8, g: u8, b: u8 },
     ColorTemperature(u16), // mireds
     Occupancy(bool),
     Battery(u8),
@@ -46,6 +55,7 @@ impl CapabilityState {
         match self {
             CapabilityState::Switch(_) => CapabilityKind::Switch,
             CapabilityState::Brightness(_) => CapabilityKind::Brightness,
+            CapabilityState::Color { .. } => CapabilityKind::Color,
             CapabilityState::ColorTemperature(_) => CapabilityKind::ColorTemperature,
             CapabilityState::Occupancy(_) => CapabilityKind::Occupancy,
             CapabilityState::Battery(_) => CapabilityKind::Battery,
@@ -159,6 +169,22 @@ pub enum Command {
         device: DeviceId,
         value: u8,
     },
+    /// Chromatic color in sRGB. Adapters translate to protocol-native forms
+    /// (z2m `color`, Matter hue/sat, Z-Wave `targetColor`, …).
+    SetColor {
+        device: DeviceId,
+        r: u8,
+        g: u8,
+        b: u8,
+        transition: Option<Millis>,
+    },
+    /// White color temperature in mireds (reciprocal megakelvin). Kelvin values
+    /// from config are converted at compile time.
+    SetColorTemperature {
+        device: DeviceId,
+        mireds: u16,
+        transition: Option<Millis>,
+    },
     ActivateScene {
         scene: SceneId,
     },
@@ -181,6 +207,8 @@ impl Command {
             Command::SetBrightness { device, .. } => Some(*device),
             Command::DecreaseBrightness { device, .. } => Some(*device),
             Command::IncreaseBrightness { device, .. } => Some(*device),
+            Command::SetColor { device, .. } => Some(*device),
+            Command::SetColorTemperature { device, .. } => Some(*device),
             Command::ActivateScene { .. }
             | Command::ScheduleTimer { .. }
             | Command::CancelTimer { .. } => None,

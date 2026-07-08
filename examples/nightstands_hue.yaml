@@ -32,12 +32,14 @@ devices:
   reilly_nightstand:
     adapter: z2m
     address: 3r_rgb_a
-    capabilities: [switch, brightness]
+    # `color` and `color_temperature` are independent — an RGB bulb that also
+    # does tunable white declares both.
+    capabilities: [switch, brightness, color, color_temperature]
 
   kennedy_nightstand:
     adapter: z2m
     address: 3r_rgb_b
-    capabilities: [switch, brightness]
+    capabilities: [switch, brightness, color, color_temperature]
 
   bedroom_wall_switch:
     adapter: z2m
@@ -85,8 +87,11 @@ rules:
     then:
       - set_brightness: { device: kennedy_nightstand, value: 100 }
       - set_brightness: { device: reilly_nightstand, value: 100 }
+      # Warm white on wake-up; ~2700 K reads as cozy. `transition` fades it in.
+      - set_color_temperature: { device: kennedy_nightstand, kelvin: 2700, transition: 1s }
+      - set_color_temperature: { device: reilly_nightstand, kelvin: 2700, transition: 1s }
 
-  reilly_toggle: 
+  reilly_toggle:
     when:
       event: reilly_dimmer.power
     then: 
@@ -125,6 +130,10 @@ rules:
     then:
       - set_brightness: { device: kennedy_nightstand, value: 100 }
       - set_brightness: { device: reilly_nightstand, value: 100 }
+      # Wall switch brings the room up in a warm amber. `color` accepts either a
+      # `#RRGGBB` hex string or an `{ r, g, b }` object (0–255 each).
+      - set_color: { device: kennedy_nightstand, color: "#ff9e3d", transition: 1s }
+      - set_color: { device: reilly_nightstand, color: { r: 255, g: 158, b: 61 }, transition: 1s }
 
   wall_switch_off:
     when:

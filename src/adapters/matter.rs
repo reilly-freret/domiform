@@ -51,6 +51,15 @@ pub enum ClusterCommand {
     /// LevelControl: MoveToLevelWithOnOff. `level` is 0..=254; `transition_ds` is
     /// the fade time in tenths of a second.
     MoveToLevel { level: u8, transition_ds: u16 },
+    /// ColorControl: MoveToHueAndSaturation. Hue and saturation are Matter's
+    /// 0..=254 encodings (hue maps to 0..=360°, saturation to 0..=100%).
+    MoveToHueAndSaturation {
+        hue: u8,
+        saturation: u8,
+        transition_ds: u16,
+    },
+    /// ColorControl: MoveToColorTemperature. `mireds` is the target white point.
+    MoveToColorTemperature { mireds: u16, transition_ds: u16 },
 }
 
 /// One inbound attribute report (the unit of [`MatterController::poll`]). `value`
@@ -92,6 +101,10 @@ pub struct MatterAdapter {
     by_id: HashMap<DeviceId, (NodeId, EndpointId)>,
     /// reverse lookup for an inbound attribute report.
     by_node: HashMap<(NodeId, EndpointId), DeviceId>,
+    /// Last-seen ColorControl hue/saturation per device. Matter reports the two
+    /// as independent attributes, but a `Color` event needs both, so we remember
+    /// whichever arrived first and emit once the pair is known. See [`fold_hue_sat`].
+    hue_sat: HashMap<DeviceId, HueSat>,
     controller: Box<dyn MatterController>,
 }
 
@@ -111,9 +124,18 @@ impl MatterAdapter {
         MatterAdapter {
             by_id,
             by_node,
+            hue_sat: HashMap::new(),
             controller,
         }
     }
+}
+
+/// Partial ColorControl color state accumulated from independent hue/saturation
+/// attribute reports.
+#[derive(Clone, Copy, Default)]
+struct HueSat {
+    hue: Option<u8>,
+    sat: Option<u8>,
 }
 
 impl Adapter for MatterAdapter {
@@ -140,10 +162,44 @@ impl Adapter for MatterAdapter {
         let reports = self.controller.poll();
         let mut events = Vec::new();
         for r in &reports {
+            // ColorControl CurrentHue / CurrentSaturation arrive as separate
+            // attributes; fold them into a `Color` event once both are known.
+            if r.cluster == 0x0300 && matches!(r.attribute, 0x0008 | 0x0009) {
+                if let Some(&device) = self.by_node.get(&(r.node, r.endpoint)) {
+                    if let Some(ev) =
+                        fold_hue_sat(self.hue_sat.entry(device).or_default(), device, r)
+                    {
+                        events.push(ev);
+                    }
+                }
+                continue;
+            }
             events.extend(report_to_events(&self.by_node, r));
         }
         events
     }
+}
+
+/// Fold one hue/saturation attribute report into the device's accumulated pair,
+/// emitting a `Color` event once both halves are present. Returns `None` while
+/// only one half has been seen (or on a non-numeric value).
+fn fold_hue_sat(acc: &mut HueSat, device: DeviceId, r: &AttrReport) -> Option<Event> {
+    let v = r.value.as_u64()?.min(254) as u8;
+    match r.attribute {
+        0x0008 => acc.hue = Some(v),
+        0x0009 => acc.sat = Some(v),
+        _ => return None,
+    }
+    let (hue, sat) = (acc.hue?, acc.sat?);
+    let (red, green, blue) = crate::color::hue_sat_254_to_rgb(hue, sat);
+    Some(Event::StateReported {
+        device,
+        state: CapabilityState::Color {
+            r: red,
+            g: green,
+            b: blue,
+        },
+    })
 }
 
 // --- pure translation (no controller, no engine) ----------------------------
@@ -159,6 +215,26 @@ pub fn command_to_cluster(cmd: &Command) -> Option<ClusterCommand> {
         } => Some(ClusterCommand::MoveToLevel {
             level: pct_to_level(*value) as u8, // 0..=100 → 0..=254
             transition_ds: transition.map_or(0, |ms| (ms / 100) as u16), // ms → 1/10 s
+        }),
+        Command::SetColor {
+            r,
+            g,
+            b,
+            transition,
+            ..
+        } => {
+            let (hue, saturation) = crate::color::rgb_to_hue_sat_254(*r, *g, *b);
+            Some(ClusterCommand::MoveToHueAndSaturation {
+                hue,
+                saturation,
+                transition_ds: transition.map_or(0, |ms| (ms / 100) as u16),
+            })
+        }
+        Command::SetColorTemperature {
+            mireds, transition, ..
+        } => Some(ClusterCommand::MoveToColorTemperature {
+            mireds: *mireds,
+            transition_ds: transition.map_or(0, |ms| (ms / 100) as u16),
         }),
         // Scenes/timers aren't device commands; the caller turns this `None` into
         // a `Permanent` outcome (surfaced to the `Observer`, not printed here).
@@ -365,6 +441,30 @@ mod matter_ws {
                     0x0008,
                     "MoveToLevelWithOnOff",
                     json!({ "level": level, "transitionTime": transition_ds }),
+                ),
+                ClusterCommand::MoveToHueAndSaturation {
+                    hue,
+                    saturation,
+                    transition_ds,
+                } => (
+                    0x0300,
+                    "MoveToHueAndSaturation",
+                    json!({
+                        "hue": hue,
+                        "saturation": saturation,
+                        "transitionTime": transition_ds,
+                    }),
+                ),
+                ClusterCommand::MoveToColorTemperature {
+                    mireds,
+                    transition_ds,
+                } => (
+                    0x0300,
+                    "MoveToColorTemperature",
+                    json!({
+                        "colorTemperatureMireds": mireds,
+                        "transitionTime": transition_ds,
+                    }),
                 ),
             };
             let message_id = self.next_id.to_string();

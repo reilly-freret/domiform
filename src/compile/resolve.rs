@@ -176,6 +176,7 @@ fn parse_capability(s: &str) -> Option<CapabilityKind> {
     Some(match s {
         "switch" => CapabilityKind::Switch,
         "brightness" => CapabilityKind::Brightness,
+        "color" => CapabilityKind::Color,
         "color_temperature" => CapabilityKind::ColorTemperature,
         "occupancy" => CapabilityKind::Occupancy,
         "battery" => CapabilityKind::Battery,

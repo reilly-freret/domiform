@@ -262,6 +262,77 @@ fn outbound_commands_publish_to_set_topic() {
 }
 
 #[test]
+fn outbound_color_and_color_temp_publish() {
+    let broker = TestBroker::default();
+    let mut a = adapter(&broker);
+
+    a.dispatch(
+        &Command::SetColor {
+            device: LIGHT,
+            r: 255,
+            g: 107,
+            b: 71,
+            // Sub-second fade: must survive as a fractional-second transition,
+            // not truncate to 0 (z2m accepts floats).
+            transition: Some(500),
+        },
+        0,
+    );
+    a.dispatch(
+        &Command::SetColorTemperature {
+            device: LIGHT,
+            mireds: 370,
+            transition: None,
+        },
+        0,
+    );
+
+    let published = broker.published();
+    assert!(
+        published[0].1.contains("\"r\":255")
+            && published[0].1.contains("\"g\":107")
+            && published[0].1.contains("\"b\":71"),
+        "got {}",
+        published[0].1
+    );
+    assert!(
+        published[0].1.contains("\"transition\":0.5"),
+        "got {}",
+        published[0].1
+    );
+    assert!(
+        published[1].1.contains("\"color_temp\":370"),
+        "got {}",
+        published[1].1
+    );
+}
+
+#[test]
+fn inbound_color_and_color_temp_become_events() {
+    let broker = TestBroker::default();
+    let mut a = adapter(&broker);
+
+    broker.receive(
+        "zigbee2mqtt/light_01",
+        r#"{"color":{"r":46,"g":102,"b":150},"color_temp":325}"#,
+    );
+    let events = a.tick(0);
+
+    assert!(events.contains(&Event::StateReported {
+        device: LIGHT,
+        state: domiform::CapabilityState::Color {
+            r: 46,
+            g: 102,
+            b: 150
+        },
+    }));
+    assert!(events.contains(&Event::StateReported {
+        device: LIGHT,
+        state: domiform::CapabilityState::ColorTemperature(325),
+    }));
+}
+
+#[test]
 fn commanding_an_unmanaged_device_is_permanent_failure() {
     let broker = TestBroker::default();
     let mut a = adapter(&broker);

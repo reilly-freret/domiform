@@ -20,7 +20,7 @@ use serde_yaml::Value;
 
 use crate::compile::ast::{
     RawDecreaseBrightness, RawIncreaseBrightness, RawOccupancyIs, RawScheduleTimer,
-    RawSetBrightness, RawSwitchIs,
+    RawSetBrightness, RawSetColor, RawSetColorTemperature, RawSwitchIs,
 };
 use crate::compile::diagnostic::Diagnostic;
 use crate::compile::resolve::DeviceDef;
@@ -395,6 +395,45 @@ impl Lowerer<'_> {
                     value: b.value,
                 }
             }
+            "set_color" => {
+                let c: RawSetColor = self.payload(payload, "set_color", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                self.require_cap(device, &c.device, CapabilityKind::Color, "set_color", at);
+                let (r, g, b) = self.parse_color(&c.color, at)?;
+                let transition = match &c.transition {
+                    Some(s) => Some(self.parse_duration(s, at)?),
+                    None => None,
+                };
+                Command::SetColor {
+                    device,
+                    r,
+                    g,
+                    b,
+                    transition,
+                }
+            }
+            "set_color_temperature" => {
+                let c: RawSetColorTemperature =
+                    self.payload(payload, "set_color_temperature", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                self.require_cap(
+                    device,
+                    &c.device,
+                    CapabilityKind::ColorTemperature,
+                    "set_color_temperature",
+                    at,
+                );
+                let mireds = self.parse_color_temperature(&c, at)?;
+                let transition = match &c.transition {
+                    Some(s) => Some(self.parse_duration(s, at)?),
+                    None => None,
+                };
+                Command::SetColorTemperature {
+                    device,
+                    mireds,
+                    transition,
+                }
+            }
             "activate_scene" => {
                 let name = self.as_name(&payload, "activate_scene", at)?;
                 match self.scene_index.get(&name) {
@@ -474,5 +513,86 @@ impl Lowerer<'_> {
             at,
         );
         None
+    }
+
+    /// Parse a chromatic color from `#RRGGBB` or `{ r, g, b }` into sRGB bytes.
+    fn parse_color(&mut self, v: &Value, at: &str) -> Option<(u8, u8, u8)> {
+        if let Some(s) = v.as_str() {
+            return match crate::color::hex_to_rgb(s) {
+                Some(rgb) => Some(rgb),
+                None => {
+                    self.error(
+                        "E_BAD_COLOR",
+                        format!("invalid hex color '{s}' (expected `#RRGGBB`)"),
+                        at,
+                    );
+                    None
+                }
+            };
+        }
+        if let Value::Mapping(m) = v {
+            let r = m.get("r").and_then(Value::as_u64);
+            let g = m.get("g").and_then(Value::as_u64);
+            let b = m.get("b").and_then(Value::as_u64);
+            if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+                if r <= 255 && g <= 255 && b <= 255 {
+                    return Some((r as u8, g as u8, b as u8));
+                }
+            }
+        }
+        self.error(
+            "E_BAD_COLOR",
+            "color must be a `#RRGGBB` hex string or `{ r, g, b }` object with values 0–255".into(),
+            at,
+        );
+        None
+    }
+
+    /// Resolve exactly one of `kelvin` or `mireds` to mireds.
+    fn parse_color_temperature(&mut self, raw: &RawSetColorTemperature, at: &str) -> Option<u16> {
+        let has_kelvin = raw.kelvin.is_some();
+        let has_mireds = raw.mireds.is_some();
+        match (has_kelvin, has_mireds) {
+            (true, true) => {
+                self.error(
+                    "E_BAD_COLOR_TEMP",
+                    "set_color_temperature must set exactly one of `kelvin` or `mireds`".into(),
+                    at,
+                );
+                None
+            }
+            (false, false) => {
+                self.error(
+                    "E_BAD_COLOR_TEMP",
+                    "set_color_temperature needs one of `kelvin` or `mireds`".into(),
+                    at,
+                );
+                None
+            }
+            (true, false) => {
+                let kelvin = raw.kelvin.unwrap();
+                if !(1000..=10_000).contains(&kelvin) {
+                    self.error(
+                        "E_BAD_COLOR_TEMP",
+                        format!("kelvin {kelvin} out of range (expected 1000–10000)"),
+                        at,
+                    );
+                    return None;
+                }
+                Some((1_000_000 / kelvin).min(u16::MAX as u32) as u16)
+            }
+            (false, true) => {
+                let mireds = raw.mireds.unwrap();
+                if !(100..=1000).contains(&mireds) {
+                    self.error(
+                        "E_BAD_COLOR_TEMP",
+                        format!("mireds {mireds} out of range (expected 100–1000)"),
+                        at,
+                    );
+                    return None;
+                }
+                Some(mireds)
+            }
+        }
     }
 }

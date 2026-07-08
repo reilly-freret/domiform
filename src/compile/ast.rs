@@ -189,6 +189,28 @@ pub struct RawIncreaseBrightness {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RawSetColor {
+    pub device: String,
+    /// Chromatic color: a `#RRGGBB` hex string or `{ r, g, b }` object.
+    pub color: Value,
+    #[serde(default)]
+    pub transition: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSetColorTemperature {
+    pub device: String,
+    #[serde(default)]
+    pub kelvin: Option<u32>,
+    #[serde(default)]
+    pub mireds: Option<u16>,
+    #[serde(default)]
+    pub transition: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawScheduleTimer {
     pub key: String,
     /// Delay like `10m` / `30s` / `1h`.
