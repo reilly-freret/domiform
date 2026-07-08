@@ -30,9 +30,9 @@ pub mod state;
 pub mod wake;
 
 pub use adapters::{
-    Adapter, AttrReport, ClockAdapter, ClusterCommand, DispatchOutcome, EndpointId, MatterAdapter,
-    MatterController, MockDeviceAdapter, MqttMessage, MqttTransport, NodeId, SchedulerAdapter,
-    Zigbee2MqttAdapter,
+    Adapter, AttrReport, ClockAdapter, ClusterCommand, DeviceKind, DispatchOutcome, EndpointId,
+    MatterAdapter, MatterController, MockDeviceAdapter, MqttMessage, MqttTransport, NodeId,
+    SchedulerAdapter, SetValue, ValueUpdate, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
 };
 pub use compile::{
     build_engine, build_engine_at, build_engine_with_waker, compile_str, CompileErrors,

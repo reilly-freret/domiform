@@ -74,6 +74,14 @@
         {
           "additionalProperties": false,
           "properties": {
+            "type": { "const": "zwavejs" },
+            "url": { "type": "string", "description": "zwave-js-server WebSocket URL, e.g. ws://host:3000." }
+          },
+          "required": ["url"]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "type": { "const": "mock" }
           }
         }
@@ -93,13 +101,13 @@
         "adapter": { "type": "string", "description": "Name of an entry in `adapters`." },
         "address": {
           "type": "string",
-          "description": "Protocol address. Required for matter (the decimal node_id). Optional for zigbee2mqtt (the friendly_name; defaults to the IEEE address). Unused for mock."
+          "description": "Protocol address. Required for matter and zwavejs (the decimal node_id). Optional for zigbee2mqtt (the friendly_name; defaults to the IEEE address). Unused for mock."
         },
         "endpoint": {
           "type": "integer",
           "minimum": 0,
           "maximum": 65535,
-          "description": "Matter endpoint (default 1). Ignored by other protocols."
+          "description": "Sub-device endpoint of a multi-endpoint node. Optional; only needed to address one load of a multi-load node. Default is protocol-specific: matter → 1, zwavejs → 0 (root). Ignored by zigbee2mqtt."
         },
         "capabilities": {
           "type": "array",

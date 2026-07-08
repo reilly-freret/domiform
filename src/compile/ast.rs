@@ -69,29 +69,22 @@ pub struct RawSystem {
     pub longitude: Option<f64>,
 }
 
-/// An adapter, discriminated by its `type` field (internally tagged — which
-/// serde_yaml *does* deserialize from maps). Connection details live here, with
-/// the adapter that uses them — not in `system`.
+/// One adapter entry: its `type` discriminator plus the remaining
+/// protocol-specific fields, kept as a raw value for the adapter's own plugin to
+/// validate. Deliberately *not* an enum-with-a-variant-per-protocol: that would
+/// force every new adapter to edit this file. Instead the compiler stays
+/// adapter-agnostic and each protocol lives entirely in `src/adapters/`, keyed
+/// by its `type` in the adapter registry (`adapters::plugins`).
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RawAdapter {
-    Zigbee2mqtt {
-        /// Broker URL, e.g. `mqtt://mosquitto:1883`.
-        url: String,
-        #[serde(default = "default_base_topic")]
-        base_topic: String,
-    },
-    /// A Matter controller (`python-matter-server`) over WebSocket.
-    Matter {
-        /// Controller WebSocket URL, e.g. `ws://host:5580/ws`.
-        url: String,
-    },
-    /// In-memory adapter, for tests and bring-up.
-    Mock,
-}
-
-fn default_base_topic() -> String {
-    "zigbee2mqtt".to_string()
+pub struct RawAdapter {
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Every field besides `type`, captured verbatim. The adapter's
+    /// `AdapterPlugin::validate_config` deserializes this into its own typed,
+    /// `deny_unknown_fields` config — so a mistyped key is still a compile error,
+    /// it's just caught by the adapter rather than by this enum.
+    #[serde(flatten)]
+    pub config: Value,
 }
 
 #[derive(Debug, Deserialize)]

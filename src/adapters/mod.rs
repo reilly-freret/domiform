@@ -13,25 +13,55 @@
 //! | `mock.rs` | [`MockDeviceAdapter`] — echoes commanded state (tests/bring-up) |
 //! | `scheduler.rs` | [`SchedulerAdapter`] — timers; "time is an adapter" |
 //! | `clock.rs` | [`ClockAdapter`] — synthetic time-of-day / sun device |
-//! | `zigbee2mqtt.rs` | [`Zigbee2MqttAdapter`] — the one real protocol adapter |
+//! | `zigbee2mqtt.rs` | [`Zigbee2MqttAdapter`] — zigbee2mqtt over MQTT |
+//! | `matter.rs` | [`MatterAdapter`] — Matter via `python-matter-server` |
+//! | `zwavejs.rs` | [`ZwaveAdapter`] — Z-Wave via `zwave-js-server` |
 //!
-//! **To add a protocol adapter** (Z-Wave, Matter, ESPHome, …): add a module here
-//! and implement [`Adapter`]. Re-export its type below and wire it in
-//! `compile::build_engine`.
+//! **To add a protocol adapter** (Z-Wave, Matter, ESPHome, …): add a module
+//! here, implement [`Adapter`] for its runtime type and [`AdapterPlugin`] for a
+//! zero-sized `PLUGIN` marker (config validation + construction — see any
+//! existing adapter), then add one line to [`plugins`]. The compiler discovers
+//! it through the registry, so nothing in `compile/` changes.
 
 use crate::model::{Command, Event, Millis};
 
 mod clock;
 pub mod matter;
 mod mock;
+mod plugin;
 mod scheduler;
 pub mod zigbee2mqtt;
+pub mod zwavejs;
 
 pub use clock::ClockAdapter;
 pub use matter::{AttrReport, ClusterCommand, EndpointId, MatterAdapter, MatterController, NodeId};
 pub use mock::MockDeviceAdapter;
+pub use plugin::{config_of, AdapterPlugin};
 pub use scheduler::SchedulerAdapter;
 pub use zigbee2mqtt::{MqttMessage, MqttTransport, Zigbee2MqttAdapter};
+pub use zwavejs::{DeviceKind, SetValue, ValueUpdate, ZwaveAdapter, ZwaveClient};
+
+/// Every protocol adapter the compiler knows about, in one place. This is the
+/// **only** line a new adapter adds outside its own file: append its `PLUGIN`.
+/// The resolver looks a config `type` up here, and the engine builder builds
+/// through the trait, so neither has a per-adapter branch anymore.
+static PLUGINS: &[&dyn AdapterPlugin] = &[
+    &zigbee2mqtt::PLUGIN,
+    &matter::PLUGIN,
+    &zwavejs::PLUGIN,
+    &mock::PLUGIN,
+];
+
+/// The registered adapters (see [`PLUGINS`]).
+pub fn plugins() -> &'static [&'static dyn AdapterPlugin] {
+    PLUGINS
+}
+
+/// The plugin whose [`type_tag`](AdapterPlugin::type_tag) matches a config
+/// `type`, or `None` if no adapter claims it (an unknown-type error).
+pub fn plugin_for(type_tag: &str) -> Option<&'static dyn AdapterPlugin> {
+    PLUGINS.iter().copied().find(|p| p.type_tag() == type_tag)
+}
 
 /// Scale a 0..=100 percentage to the 0..=254 "level" that both zigbee2mqtt
 /// brightness and Matter LevelControl use (identical ranges). Rounds to nearest

@@ -461,3 +461,96 @@ mod matter_ws {
 }
 
 pub use matter_ws::MatterServerWs;
+
+// --- compiler registration --------------------------------------------------
+
+use super::plugin::{config_of, AdapterPlugin};
+use crate::compile::diagnostic::Diagnostic;
+use crate::compile::resolve::DeviceDef;
+
+/// Registers the Matter adapter (`type: matter`) with the compiler.
+#[derive(Debug)]
+pub struct Plugin;
+pub static PLUGIN: Plugin = Plugin;
+
+/// The `adapters.<name>` block for a Matter adapter, minus `type`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    /// Controller WebSocket URL, e.g. `ws://host:5580/ws`.
+    url: String,
+}
+
+impl AdapterPlugin for Plugin {
+    fn type_tag(&self) -> &'static str {
+        "matter"
+    }
+
+    fn validate_config(&self, config: &serde_yaml::Value, at: &str, diags: &mut Vec<Diagnostic>) {
+        let Some(cfg) = config_of::<Config>(config, at, diags) else {
+            return;
+        };
+        if !(cfg.url.starts_with("ws://") || cfg.url.starts_with("wss://")) {
+            diags.push(
+                Diagnostic::error(
+                    "E_BAD_URL",
+                    format!(
+                        "matter controller url must be ws:// or wss:// — got '{}'",
+                        cfg.url
+                    ),
+                )
+                .at(at.to_string()),
+            );
+        }
+    }
+
+    fn validate_device(
+        &self,
+        _config: &serde_yaml::Value,
+        device: &DeviceDef,
+        at: &str,
+        diags: &mut Vec<Diagnostic>,
+    ) {
+        // Matter addresses devices by the decimal node_id from commissioning.
+        match &device.address {
+            None => diags.push(
+                Diagnostic::error(
+                    "E_MISSING_ADDRESS",
+                    "matter devices need an `address` (the decimal node_id from commissioning)",
+                )
+                .at(at.to_string()),
+            ),
+            Some(addr) if addr.parse::<u64>().is_err() => diags.push(
+                Diagnostic::error(
+                    "E_BAD_ADDRESS",
+                    format!("matter `address` must be a decimal node_id — got '{addr}'"),
+                )
+                .at(at.to_string()),
+            ),
+            _ => {}
+        }
+    }
+
+    fn build(
+        &self,
+        config: &serde_yaml::Value,
+        devices: &[&DeviceDef],
+        waker: Option<crate::wake::Waker>,
+    ) -> Box<dyn Adapter> {
+        let cfg: Config = serde_yaml::from_value(config.clone())
+            .unwrap_or_else(|_| Config { url: String::new() });
+        // `address` is the decimal node_id (already validated numeric); a device
+        // whose address somehow doesn't parse is dropped rather than panicking.
+        let targets: Vec<_> = devices
+            .iter()
+            .filter_map(|d| {
+                let node = d.address.as_ref()?.parse::<u64>().ok()?;
+                // Matter's endpoint default is 1 (most nodes' first application
+                // endpoint), applied here so each protocol keeps its own default.
+                Some((d.id, NodeId(node), EndpointId(d.endpoint.unwrap_or(1))))
+            })
+            .collect();
+        let controller = MatterServerWs::connect(&cfg.url, waker);
+        Box::new(MatterAdapter::new(targets, Box::new(controller)))
+    }
+}

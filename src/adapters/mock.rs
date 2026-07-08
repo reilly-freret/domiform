@@ -2,11 +2,37 @@
 //! `StateReported` event, modeling the device-confirmation feedback path. Used
 //! by tests and as the fallback when a protocol adapter isn't compiled in.
 
+use serde_yaml::Value;
+
+use super::plugin::AdapterPlugin;
 use super::{Adapter, DispatchOutcome};
+use crate::compile::resolve::DeviceDef;
 use crate::model::{CapabilityState, Command, Event, Millis};
+use crate::wake::Waker;
 
 #[derive(Default)]
 pub struct MockDeviceAdapter;
+
+/// Registers the in-memory mock adapter (`type: mock`). It takes no config and
+/// no addresses, so both validation hooks accept anything.
+#[derive(Debug)]
+pub struct Plugin;
+pub static PLUGIN: Plugin = Plugin;
+
+impl AdapterPlugin for Plugin {
+    fn type_tag(&self) -> &'static str {
+        "mock"
+    }
+
+    fn build(
+        &self,
+        _config: &Value,
+        _devices: &[&DeviceDef],
+        _waker: Option<Waker>,
+    ) -> Box<dyn Adapter> {
+        Box::new(MockDeviceAdapter)
+    }
+}
 
 impl Adapter for MockDeviceAdapter {
     fn dispatch(&mut self, cmd: &Command, _now: Millis) -> DispatchOutcome {

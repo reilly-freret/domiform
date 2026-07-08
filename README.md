@@ -55,7 +55,7 @@ registers the emulators if they aren't already present.)
 
 - [x] Zigbee2mqtt adapter
 - [x] Matter adapter
-- [ ] Z-Wave adapter
+- [x] Z-Wave adapter
 - [ ] HomeKit adapter
 - [ ] Documentation
 - [ ] Published binaries

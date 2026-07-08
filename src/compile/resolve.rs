@@ -9,7 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use crate::compile::ast::{RawAdapter, RawConfig, RawSchedule};
+use crate::adapters::plugin_for;
+use crate::compile::ast::{RawConfig, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
 use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
@@ -27,41 +28,16 @@ pub struct SystemConfig {
 }
 
 #[derive(Clone, Debug)]
-pub enum AdapterKind {
-    Zigbee2Mqtt {
-        host: String,
-        port: u16,
-        base_topic: String,
-    },
-    /// A Matter controller addressed by its WebSocket URL (e.g.
-    /// `ws://host:5580/ws`). Parsing the URL is left to the transport.
-    Matter {
-        url: String,
-    },
-    Mock,
-}
-
-/// Parse `mqtt://host:port` (scheme optional, port defaults to 1883).
-fn parse_mqtt_url(url: &str) -> Option<(String, u16)> {
-    let rest = url
-        .strip_prefix("mqtt://")
-        .or_else(|| url.strip_prefix("tcp://"))
-        .unwrap_or(url)
-        .trim_end_matches('/');
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((host, port)) => (host, port.parse::<u16>().ok()?),
-        None => (rest, 1883),
-    };
-    if host.is_empty() {
-        return None;
-    }
-    Some((host.to_string(), port))
-}
-
-#[derive(Clone, Debug)]
 pub struct AdapterDef {
     pub name: String,
-    pub kind: AdapterKind,
+    /// The registered plugin for this adapter's `type`, or `None` if no adapter
+    /// claims that type (an `E_UNKNOWN_ADAPTER_TYPE` was reported). Compilation
+    /// fails on error, so a successfully built `CompiledConfig` always has
+    /// `Some` here.
+    pub plugin: Option<&'static dyn crate::adapters::AdapterPlugin>,
+    /// The adapter's config block (every field besides `type`), validated by the
+    /// plugin and re-read by it when the adapter is built.
+    pub config: serde_yaml::Value,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,8 +63,11 @@ pub struct DeviceDef {
     /// Resolved reference (a config-space adapter index), not a string.
     pub adapter: AdapterIdx,
     pub address: Option<String>,
-    /// Matter endpoint (1 by default); ignored by protocols that don't use it.
-    pub endpoint: u16,
+    /// Sub-device endpoint, as written in config (`None` when omitted). The
+    /// default is protocol-specific, so it's applied where the adapter is built,
+    /// not here: Matter defaults to endpoint 1, Z-Wave to the root endpoint 0.
+    /// Protocols without endpoints (zigbee2mqtt) ignore it.
+    pub endpoint: Option<u16>,
     pub capabilities: Vec<CapabilityKind>,
     /// Stateless events this device can emit (button presses, knob turns, …).
     pub events: Vec<DeviceEvent>,
@@ -183,38 +162,6 @@ fn parse_capability(s: &str) -> Option<CapabilityKind> {
     })
 }
 
-fn adapter_kind(raw: &RawAdapter, diags: &mut Vec<Diagnostic>, at: &str) -> AdapterKind {
-    match raw {
-        RawAdapter::Zigbee2mqtt { url, base_topic } => {
-            let (host, port) = parse_mqtt_url(url).unwrap_or_else(|| {
-                diags.push(
-                    Diagnostic::error("E_BAD_URL", format!("invalid broker url '{url}'"))
-                        .at(at.to_string()),
-                );
-                (String::new(), 0)
-            });
-            AdapterKind::Zigbee2Mqtt {
-                host,
-                port,
-                base_topic: base_topic.clone(),
-            }
-        }
-        RawAdapter::Matter { url } => {
-            if !(url.starts_with("ws://") || url.starts_with("wss://")) {
-                diags.push(
-                    Diagnostic::error(
-                        "E_BAD_URL",
-                        format!("matter controller url must be ws:// or wss:// — got '{url}'"),
-                    )
-                    .at(at.to_string()),
-                );
-            }
-            AdapterKind::Matter { url: url.clone() }
-        }
-        RawAdapter::Mock => AdapterKind::Mock,
-    }
-}
-
 pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
     let mut diags: Vec<Diagnostic> = Vec::new();
 
@@ -223,10 +170,24 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
     let mut adapter_index: HashMap<String, AdapterIdx> = HashMap::new();
     for (name, raw_adapter) in &raw.adapters {
         adapter_index.insert(name.clone(), adapters.len());
-        let kind = adapter_kind(raw_adapter, &mut diags, &format!("adapter '{name}'"));
+        let at = format!("adapter '{name}'");
+        let plugin = plugin_for(&raw_adapter.kind);
+        if plugin.is_none() {
+            diags.push(
+                Diagnostic::error(
+                    "E_UNKNOWN_ADAPTER_TYPE",
+                    format!("unknown adapter type '{}'", raw_adapter.kind),
+                )
+                .at(at.clone()),
+            );
+        }
+        if let Some(p) = plugin {
+            p.validate_config(&raw_adapter.config, &at, &mut diags);
+        }
         adapters.push(AdapterDef {
             name: name.clone(),
-            kind,
+            plugin,
+            config: raw_adapter.config.clone(),
         });
     }
 
@@ -305,7 +266,7 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
                 name: name.clone(),
                 adapter,
                 address: raw_device.address.clone(),
-                endpoint: raw_device.endpoint.unwrap_or(1),
+                endpoint: raw_device.endpoint,
                 capabilities,
                 events,
                 metadata: DeviceMetadata {
@@ -399,40 +360,14 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
             );
         }
     }
-    // Protocol adapters address devices by an adapter-specific `address`, so one
-    // is required (and, for Matter, must be a numeric node_id).
+    // Each adapter validates its own device addressing rules (friendly_name,
+    // numeric node_id, …) through its plugin.
     for device in &devices {
         let at = format!("device '{}'", device.name);
-        match adapters.get(device.adapter).map(|a| &a.kind) {
-            // zigbee2mqtt addresses devices by friendly_name.
-            Some(AdapterKind::Zigbee2Mqtt { .. }) if device.address.is_none() => {
-                diags.push(
-                    Diagnostic::error(
-                        "E_MISSING_ADDRESS",
-                        "zigbee2mqtt devices need an `address` (the z2m friendly_name)",
-                    )
-                    .at(at),
-                );
+        if let Some(adapter) = adapters.get(device.adapter) {
+            if let Some(plugin) = adapter.plugin {
+                plugin.validate_device(&adapter.config, device, &at, &mut diags);
             }
-            // Matter addresses devices by the decimal node_id from commissioning.
-            Some(AdapterKind::Matter { .. }) => match &device.address {
-                None => diags.push(
-                    Diagnostic::error(
-                        "E_MISSING_ADDRESS",
-                        "matter devices need an `address` (the decimal node_id from commissioning)",
-                    )
-                    .at(at),
-                ),
-                Some(addr) if addr.parse::<u64>().is_err() => diags.push(
-                    Diagnostic::error(
-                        "E_BAD_ADDRESS",
-                        format!("matter `address` must be a decimal node_id — got '{addr}'"),
-                    )
-                    .at(at),
-                ),
-                _ => {}
-            },
-            _ => {}
         }
     }
     for scene in &scenes {

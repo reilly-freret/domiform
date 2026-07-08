@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Example Domiform config: a multi-load Z-Wave module — one node that exposes two
+# independent relays, each on its own endpoint.
+#
+# This is the one Z-Wave case that needs the `endpoint:` key. A module like a
+# Qubino Flush 2 Relay or a Zooz ZEN16 is a SINGLE node in zwave-js (one
+# `address`), but each relay is a separate load on a separate endpoint. To
+# control them faithfully, each relay is its own domiform device: same `address`,
+# different `endpoint`.
+#
+# Ordinary single-load devices never need `endpoint:` — it defaults to the root
+# endpoint (0). You only reach for it to disambiguate the loads of a module like
+# this one.
+#
+# Compile + run against a real zwave-js-server (the transport is always built):
+#     cargo run -- -c examples/zwave_multi_relay.yaml
+
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  zwave:
+    type: zwavejs
+    url: ws://burrow.kite-lydian.ts.net:3000
+
+devices:
+  # Node 21 is a two-relay module. Endpoint 1 drives the bathroom exhaust fan,
+  # endpoint 2 drives the vanity light. Same `address`, different `endpoint`.
+  bathroom_fan:
+    adapter: zwave
+    address: "21"
+    endpoint: 1
+    capabilities: [switch]
+
+  bathroom_light:
+    adapter: zwave
+    address: "21"
+    endpoint: 2
+    capabilities: [switch]
+
+  # A Central Scene wall remote to drive them (a single node, no endpoints).
+  bathroom_remote:
+    adapter: zwave
+    address: "22"
+    events:
+      top_single:    "1:KeyPressed"
+      bottom_single: "2:KeyPressed"
+      top_hold:      "1:KeyHeldDown"
+
+# If you want to treat the two relays as one thing, group them in a scene rather
+# than merging them into a single device — they really are two loads.
+scenes:
+  bathroom_all_on:
+    - turn_on: bathroom_fan
+    - turn_on: bathroom_light
+  bathroom_all_off:
+    - turn_off: bathroom_fan
+    - turn_off: bathroom_light
+
+rules:
+  # Top button controls just the light; a hold runs the whole room.
+  light_toggle:
+    when: { event: bathroom_remote.top_single }
+    then:
+      - toggle: bathroom_light
+
+  everything_on:
+    when: { event: bathroom_remote.top_hold }
+    then:
+      - activate_scene: bathroom_all_on
+
+  # Bottom button turns everything off.
+  everything_off:
+    when: { event: bathroom_remote.bottom_single }
+    then:
+      - activate_scene: bathroom_all_off

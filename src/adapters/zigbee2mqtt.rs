@@ -352,3 +352,127 @@ mod rumqttc_transport {
 }
 
 pub use rumqttc_transport::RumqttcTransport;
+
+// --- compiler registration --------------------------------------------------
+
+use super::plugin::{config_of, AdapterPlugin};
+use crate::compile::diagnostic::Diagnostic;
+use crate::compile::resolve::DeviceDef;
+
+/// Registers the zigbee2mqtt adapter (`type: zigbee2mqtt`) with the compiler.
+#[derive(Debug)]
+pub struct Plugin;
+pub static PLUGIN: Plugin = Plugin;
+
+/// The `adapters.<name>` block for a zigbee2mqtt adapter, minus `type`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    /// Broker URL, e.g. `mqtt://mosquitto:1883`.
+    url: String,
+    #[serde(default = "default_base_topic")]
+    base_topic: String,
+}
+
+fn default_base_topic() -> String {
+    "zigbee2mqtt".to_string()
+}
+
+/// Parse `mqtt://host:port` (scheme optional, port defaults to 1883).
+fn parse_mqtt_url(url: &str) -> Option<(String, u16)> {
+    let rest = url
+        .strip_prefix("mqtt://")
+        .or_else(|| url.strip_prefix("tcp://"))
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok()?),
+        None => (rest, 1883),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port))
+}
+
+impl AdapterPlugin for Plugin {
+    fn type_tag(&self) -> &'static str {
+        "zigbee2mqtt"
+    }
+
+    fn validate_config(&self, config: &serde_yaml::Value, at: &str, diags: &mut Vec<Diagnostic>) {
+        let Some(cfg) = config_of::<Config>(config, at, diags) else {
+            return;
+        };
+        if parse_mqtt_url(&cfg.url).is_none() {
+            diags.push(
+                Diagnostic::error("E_BAD_URL", format!("invalid broker url '{}'", cfg.url))
+                    .at(at.to_string()),
+            );
+        }
+    }
+
+    fn validate_device(
+        &self,
+        _config: &serde_yaml::Value,
+        device: &DeviceDef,
+        at: &str,
+        diags: &mut Vec<Diagnostic>,
+    ) {
+        // zigbee2mqtt addresses devices by their z2m friendly_name.
+        if device.address.is_none() {
+            diags.push(
+                Diagnostic::error(
+                    "E_MISSING_ADDRESS",
+                    "zigbee2mqtt devices need an `address` (the z2m friendly_name)",
+                )
+                .at(at.to_string()),
+            );
+        }
+    }
+
+    fn build(
+        &self,
+        config: &serde_yaml::Value,
+        devices: &[&DeviceDef],
+        waker: Option<crate::wake::Waker>,
+    ) -> Box<dyn Adapter> {
+        // Already validated in `validate_config`; fall back rather than panic.
+        let cfg: Config = serde_yaml::from_value(config.clone()).unwrap_or_else(|_| Config {
+            url: String::new(),
+            base_topic: default_base_topic(),
+        });
+        let (host, port) = parse_mqtt_url(&cfg.url).unwrap_or_default();
+
+        // friendly_name → DeviceId registry (address, or the name as a fallback).
+        let reg: Vec<(DeviceId, String)> = devices
+            .iter()
+            .map(|d| (d.id, d.address.clone().unwrap_or_else(|| d.name.clone())))
+            .collect();
+        let topics: Vec<String> = reg
+            .iter()
+            .map(|(_, friendly)| format!("{}/{friendly}", cfg.base_topic))
+            .collect();
+        // Per-device (raw action string → ActionId) for inbound translation.
+        let mut events = Vec::new();
+        for d in devices {
+            for e in &d.events {
+                events.push((d.id, e.raw.clone(), e.id));
+            }
+        }
+        // Per-device capabilities, so the adapter can prime device state on
+        // connect (a `/get` for each readable capability).
+        let capabilities: Vec<_> = devices
+            .iter()
+            .map(|d| (d.id, d.capabilities.clone()))
+            .collect();
+        let transport = RumqttcTransport::connect(&host, port, &topics, waker);
+        Box::new(Zigbee2MqttAdapter::new(
+            cfg.base_topic,
+            reg,
+            events,
+            capabilities,
+            Box::new(transport),
+        ))
+    }
+}

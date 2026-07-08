@@ -1,0 +1,112 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Example Domiform config: a Zooz ZEN32 scene controller driving a Z-Wave
+# dimmable bulb through a zwave-js-server.
+#
+# The ZEN32 is a single Z-Wave node with FIVE buttons — one large relay button
+# plus four small ones. It is NOT a multi-endpoint device: every button reports
+# through the Central Scene command class on the root endpoint, where the button
+# is a scene number and the gesture is a "key attribute". So the whole controller
+# is one domiform device whose ~35 events (5 buttons × single/double/triple/
+# quadruple/quintuple/hold/release) are disambiguated entirely by `events:`.
+#
+# Its raw event string is `<button>:<attribute>`:
+#   button    — the Central Scene scene number zwave-js reports. On the ZEN32,
+#               1 = the large relay button, 2–5 = the four small buttons.
+#               Confirm the exact physical positions in zwave-js-ui.
+#   attribute — the gesture:
+#               KeyPressed   (single)   KeyPressed2x (double)  KeyPressed3x (triple)
+#               KeyPressed4x (4×)       KeyPressed5x (5×)      KeyHeldDown  (hold)
+#               KeyReleased  (release after a hold)
+#
+# `address` is the decimal Z-Wave node id assigned at inclusion (see zwave-js-ui).
+#
+# Compile + run against a real zwave-js-server (the transport is always built):
+#     cargo run -- -c examples/zwave_scene_controller.yaml
+
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  zwave:
+    type: zwavejs
+    url: ws://burrow.kite-lydian.ts.net:3000
+
+devices:
+  # The ZEN32. `capabilities: [switch]` is its built-in relay (the load wired to
+  # the large button); the buttons themselves are the stateless `events:` below.
+  # Only the events this config actually reacts to need declaring — add more as
+  # you wire up more gestures.
+  scene_controller:
+    adapter: zwave
+    address: "7"
+    capabilities: [switch]
+    events:
+      # Button 1 — the large relay button.
+      relay_single: "1:KeyPressed"
+      relay_double: "1:KeyPressed2x"
+      relay_hold:   "1:KeyHeldDown"
+      # Buttons 2–5 — the four small buttons (single tap each).
+      b2_single: "2:KeyPressed"
+      b3_single: "3:KeyPressed"
+      b4_single: "4:KeyPressed"
+      b5_single: "5:KeyPressed"
+      # A couple of multi-tap gestures, to show the pattern.
+      b2_double: "2:KeyPressed2x"
+      b3_hold:   "3:KeyHeldDown"
+
+  # A dimmable Z-Wave bulb. `brightness` marks it a dimmer, so on/off and level
+  # both target the Multilevel Switch command class (turning it on restores its
+  # last brightness — the Z-Wave idiom — rather than forcing 100%).
+  bedroom_bulb:
+    adapter: zwave
+    address: "8"
+    capabilities: [switch, brightness]
+
+rules:
+  # Large button single tap toggles the bulb.
+  bulb_toggle:
+    when: { event: scene_controller.relay_single }
+    then:
+      - toggle: bedroom_bulb
+
+  # Large button double tap jumps to full brightness.
+  bulb_full:
+    when: { event: scene_controller.relay_double }
+    then:
+      - set_brightness: { device: bedroom_bulb, value: 100, transition: 1s }
+
+  # Holding the large button brightens a step.
+  bulb_brighten:
+    when: { event: scene_controller.relay_hold }
+    then:
+      - increase_brightness: { device: bedroom_bulb, by: 20 }
+
+  # Small buttons: quick scene levels.
+  bulb_bright_scene:
+    when: { event: scene_controller.b2_single }
+    then:
+      - set_brightness: { device: bedroom_bulb, value: 80 }
+
+  bulb_reading_scene:
+    when: { event: scene_controller.b3_single }
+    then:
+      - set_brightness: { device: bedroom_bulb, value: 50 }
+
+  bulb_dim_scene:
+    when: { event: scene_controller.b4_single }
+    then:
+      - set_brightness: { device: bedroom_bulb, value: 20 }
+
+  bulb_off:
+    when: { event: scene_controller.b5_single }
+    then:
+      - turn_off: bedroom_bulb
+
+  # A multi-tap gesture drops to a nightlight level.
+  bulb_nightlight:
+    when: { event: scene_controller.b2_double }
+    then:
+      - set_brightness: { device: bedroom_bulb, value: 5, transition: 2s }
