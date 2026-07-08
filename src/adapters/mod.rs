@@ -52,7 +52,8 @@ static PLUGINS: &[&dyn AdapterPlugin] = &[
     &mock::PLUGIN,
 ];
 
-/// The registered adapters (see [`PLUGINS`]).
+/// The registered protocol adapters. Append a new adapter's `PLUGIN` to this
+/// slice (in [`plugins`]) — the only registry edit outside its own file.
 pub fn plugins() -> &'static [&'static dyn AdapterPlugin] {
     PLUGINS
 }

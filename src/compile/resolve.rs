@@ -3,8 +3,29 @@
 //! This is where the compiler earns its name. Names become interned ids,
 //! `adapter: "zigbee"` becomes a resolved `AdapterIdx`, capability strings
 //! become `CapabilityKind`s, rule/scene bodies are lowered to runtime types, and
-//! anything that does not line up becomes a `Diagnostic`. Every problem is
+//! anything that does not line up becomes a [`Diagnostic`]. Every problem is
 //! collected — the pass never stops at the first error.
+//!
+//! # Extending the config language
+//!
+//! [`resolve`] runs in a fixed order; new checks should hook in at the right
+//! stage rather than scattering one-off validation:
+//!
+//! 1. **System** — timezone, lat/long (start of [`resolve`]).
+//! 2. **Adapters** — look up [`plugin_for`] by
+//!    `type`, then delegate config validation to
+//!    [`AdapterPlugin::validate_config`](crate::adapters::AdapterPlugin::validate_config).
+//! 3. **Devices** — bind each to a resolved adapter, check capabilities and
+//!    events, delegate per-device checks to
+//!    [`AdapterPlugin::validate_device`](crate::adapters::AdapterPlugin::validate_device).
+//! 4. **Scenes / schedules / rules** — lower via [`lower`](super::lower);
+//!    cross-reference names against the intern tables built above.
+//!
+//! **Adding a protocol adapter** does not edit this module — register a
+//! [`AdapterPlugin`](crate::adapters::AdapterPlugin) in [`adapters::plugins`](crate::adapters::plugins)
+//! instead. **Adding a global config constraint** (e.g. "every home must name
+//! itself") belongs in step 1. **Adding a shared device constraint** (e.g. a new
+//! required field on every device) belongs in step 3 and in [`DeviceDef`].
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;

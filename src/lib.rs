@@ -1,11 +1,33 @@
-//! Domiform core runtime skeleton.
+//! Domiform: declarative smart-home orchestration compiled to a deterministic
+//! event engine.
 //!
-//! This is the *runtime* half of the design — it deliberately knows nothing
-//! about YAML, parsing, or compilation. The compiler's job will be to produce
-//! the very types defined here (`Rule`, `Command`, bound `DeviceId`s, etc.)
-//! with all string references already resolved to ids.
+//! **Users** write YAML configs (see [`examples/`](https://github.com/reilly-freret/domiform/tree/main/examples)
+//! in the repository) and run them with the `domiform` binary. For Docker setup
+//! and quickstart, see the
+//! [README](https://github.com/reilly-freret/domiform/blob/main/README.md).
 //!
-//! Key design decisions baked into this skeleton:
+//! **Contributors** extend the system in two main ways:
+//!
+//! * **New protocol adapter** — one file under [`adapters`] implementing
+//!   [`Adapter`] and [`adapters::AdapterPlugin`], plus one line in
+//!   [`adapters::plugins`]. See [`adapters::AdapterPlugin`] and any existing adapter
+//!   (e.g. [`ZwaveAdapter`]) for the pattern.
+//! * **Config language / compiler** — serde mirrors in [`compile::ast`],
+//!   semantic checks in [`compile::resolve`], rule lowering in
+//!   [`compile::lower`]. Adapter-specific config validation stays in the
+//!   adapter's `PLUGIN`, not in the compiler core.
+//!
+//! Build API docs locally with `cargo doc --open`. Contribution guidelines live
+//! in `CONTRIBUTING.md` at the repository root.
+//!
+//! # Architecture
+//!
+//! The library splits cleanly into a **compiler** ([`compile`]) and a **runtime**
+//! (everything else). The runtime deliberately knows nothing about YAML: the
+//! compiler produces the types defined here (`Rule`, `Command`, bound
+//! `DeviceId`s, etc.) with all string references already resolved to ids.
+//!
+//! Key design decisions:
 //!
 //! * A **single-threaded, ordered event loop** processes one event at a time.
 //!   Given the same sequence of injected events and clock advances, behavior is

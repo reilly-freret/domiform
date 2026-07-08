@@ -3,13 +3,31 @@
 //! This is the *only* place the file format leaks in. These types are
 //! intentionally dumb — they hold strings and (for rule nodes) raw YAML values,
 //! doing no validation. Turning them into a resolved, reference-checked graph is
-//! `resolve`/`lower`'s job.
+//! [`resolve`](super::resolve) / [`lower`](super::lower)'s job.
 //!
 //! Rule triggers/conditions/commands are kept as raw `serde_yaml::Value`s rather
 //! than typed enums: their natural form is the terse single-key map
 //! (`{ turn_on: hallway_light }`), which serde's externally-tagged enums do not
 //! deserialize from. `lower` interprets those maps directly, with full control
 //! over diagnostics.
+//!
+//! # Extending the config language
+//!
+//! What to touch depends on the change:
+//!
+//! * **New top-level section** (e.g. a `groups:` block) — add a field to
+//!   [`RawConfig`] with `#[serde(default)]`, then teach [`resolve`](super::resolve)
+//!   to walk it and extend [`CompiledConfig`](super::resolve::CompiledConfig).
+//!   Update `schema/domiform.schema.json` so editors and `--check` stay aligned.
+//! * **New rule trigger / condition / command form** — usually no AST change;
+//!   add a dispatch arm in [`lower`](super::lower) for the new single-key map
+//!   and a small typed payload struct here if the value has multiple fields.
+//! * **New adapter `type:` or adapter config fields** — *not* here. Adapters own
+//!   their config shape via [`AdapterPlugin::validate_config`](crate::adapters::AdapterPlugin::validate_config)
+//!   and deserialize with [`config_of`](crate::adapters::config_of); only the
+//!   generic [`RawAdapter::config`](RawAdapter) blob passes through.
+//! * **New device field shared by all adapters** — extend [`RawDevice`] and
+//!   [`DeviceDef`](super::resolve::DeviceDef) in `resolve`.
 
 use std::collections::BTreeMap;
 

@@ -26,8 +26,45 @@ use crate::adapters::ClockAdapter;
 use crate::engine::Engine;
 use crate::wake::Waker;
 
-/// Parse and resolve config text into a `CompiledConfig`, or return every
+/// Parse and resolve config text into a [`CompiledConfig`], or return every
 /// diagnostic found. A syntax error short-circuits to a single `E_PARSE`.
+///
+/// # Examples
+///
+/// ```
+/// use domiform::compile_str;
+///
+/// let cfg = compile_str(
+///     r#"
+/// adapters:
+///   z: { type: mock }
+/// devices:
+///   lamp: { adapter: z, capabilities: [switch] }
+/// "#,
+/// )
+/// .expect("valid config");
+///
+/// assert_eq!(cfg.devices.len(), 1);
+/// assert!(cfg.device_id("lamp").is_some());
+/// ```
+///
+/// Invalid configs collect every error in one pass:
+///
+/// ```
+/// use domiform::compile_str;
+///
+/// let err = compile_str(
+///     r#"
+/// adapters:
+///   z: { type: not_a_real_adapter }
+/// devices:
+///   lamp: { adapter: missing, capabilities: [switch] }
+/// "#,
+/// )
+/// .unwrap_err();
+///
+/// assert!(err.0.len() >= 2);
+/// ```
 pub fn compile_str(src: &str) -> Result<CompiledConfig, CompileErrors> {
     let raw: ast::RawConfig = match serde_yaml::from_str(src) {
         Ok(raw) => raw,
@@ -41,7 +78,7 @@ pub fn compile_str(src: &str) -> Result<CompiledConfig, CompileErrors> {
     resolve::resolve(raw)
 }
 
-/// Construct a runnable engine from compiled config: build each adapter, bind
+/// Construct a runnable [`Engine`] from compiled config: build each adapter, bind
 /// every device, wire the synthetic clock, install scenes, and load rules. A
 /// compiled YAML file becomes a running automation.
 ///
@@ -49,6 +86,27 @@ pub fn compile_str(src: &str) -> Result<CompiledConfig, CompileErrors> {
 /// not a cargo feature); they (re)connect in the background, so a down
 /// broker/controller isn't fatal. `MockDeviceAdapter` serves only `type: mock`.
 /// Tests construct engines directly with in-memory transports instead.
+///
+/// # Examples
+///
+/// ```
+/// use domiform::{build_engine, compile_str};
+///
+/// let cfg = compile_str(
+///     r#"
+/// adapters:
+///   z: { type: mock }
+/// devices:
+///   lamp: { adapter: z, capabilities: [switch] }
+/// "#,
+/// )
+/// .unwrap();
+///
+/// let mut engine = build_engine(&cfg);
+/// engine.start();
+/// assert_eq!(engine.now(), 0);
+/// assert!(cfg.device_id("lamp").is_some());
+/// ```
 pub fn build_engine(cfg: &CompiledConfig) -> Engine {
     build_engine_with_waker(cfg, None)
 }
