@@ -180,6 +180,7 @@ fn parse_capability(s: &str) -> Option<CapabilityKind> {
         "color_temperature" => CapabilityKind::ColorTemperature,
         "occupancy" => CapabilityKind::Occupancy,
         "battery" => CapabilityKind::Battery,
+        "ir_transmitter" => CapabilityKind::IrTransmitter,
         _ => return None,
     })
 }

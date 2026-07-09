@@ -32,6 +32,9 @@ pub enum CapabilityKind {
     ColorTemperature,
     Occupancy,
     Battery,
+    /// Write-only IR blaster. No corresponding [`CapabilityState`] — sends are
+    /// fire-and-forget and adapters do not fold inbound IR into the state store.
+    IrTransmitter,
     TimeOfDay,
     SunUp,
 }
@@ -195,6 +198,11 @@ pub enum Command {
     CancelTimer {
         key: TimerKey,
     },
+    /// Send a pre-learned IR code (base64) via an IR blaster device.
+    SendIrCode {
+        device: DeviceId,
+        code: String,
+    },
 }
 
 impl Command {
@@ -209,6 +217,7 @@ impl Command {
             Command::IncreaseBrightness { device, .. } => Some(*device),
             Command::SetColor { device, .. } => Some(*device),
             Command::SetColorTemperature { device, .. } => Some(*device),
+            Command::SendIrCode { device, .. } => Some(*device),
             Command::ActivateScene { .. }
             | Command::ScheduleTimer { .. }
             | Command::CancelTimer { .. } => None,

@@ -89,8 +89,8 @@
     },
 
     "capability": {
-      "enum": ["switch", "brightness", "color", "color_temperature", "occupancy", "battery"],
-      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.) `color` and `color_temperature` are independent — declaring one does not imply the other."
+      "enum": ["switch", "brightness", "color", "color_temperature", "occupancy", "battery", "ir_transmitter"],
+      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.) `color` and `color_temperature` are independent — declaring one does not imply the other. `ir_transmitter` is write-only (send IR codes; no readable state)."
     },
 
     "device": {
@@ -291,7 +291,19 @@
             "after": { "$ref": "#/$defs/duration" }
           }
         },
-        "cancel_timer": { "type": "string", "description": "Timer key." }
+        "cancel_timer": { "type": "string", "description": "Timer key." },
+        "send_ir_code": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "code"],
+          "properties": {
+            "device": { "type": "string", "description": "IR blaster device name." },
+            "code": {
+              "type": "string",
+              "description": "Pre-learned IR payload in base64 (zigbee2mqtt `ir_code_to_send` form)."
+            }
+          }
+        }
       }
     },
 

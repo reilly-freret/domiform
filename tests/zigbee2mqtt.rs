@@ -404,6 +404,29 @@ fn outbound_color_and_color_temp_publish() {
 }
 
 #[test]
+fn outbound_send_ir_code_publish() {
+    let broker = TestBroker::default();
+    let mut a = adapter(&broker);
+
+    a.dispatch(
+        &Command::SendIrCode {
+            device: LIGHT,
+            code: "BW4jahFCAuAXAQGMBsADAHLgAgvAE4AH4BcBwCeAB+AFRw8vm24jqwhCAv//biOrCEIC".into(),
+        },
+        0,
+    );
+
+    let published = broker.published();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].0, "zigbee2mqtt/light_01/set");
+    assert!(
+        published[0].1.contains("\"ir_code_to_send\":\"BW4jahFCAuAXAQGMBsADAHLgAgvAE4AH4BcBwCeAB+AFRw8vm24jqwhCAv//biOrCEIC\""),
+        "got {}",
+        published[0].1
+    );
+}
+
+#[test]
 fn inbound_color_and_color_temp_become_events() {
     let broker = TestBroker::default();
     let mut a = adapter(&broker);

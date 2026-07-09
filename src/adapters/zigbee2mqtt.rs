@@ -306,6 +306,7 @@ pub fn command_to_publish(
             set_transition(&mut o, *transition);
             o
         }
+        Command::SendIrCode { code, .. } => json!({ "ir_code_to_send": code }),
         // Not addressed to a z2m device (scenes/timers). The caller turns this
         // `None` into a `Permanent` outcome, which the engine surfaces to the
         // `Observer` — so the failure is reported there, not printed here.

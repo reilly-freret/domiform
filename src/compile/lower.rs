@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 use serde_yaml::Value;
 
 use crate::compile::ast::{
-    RawDecreaseBrightness, RawIncreaseBrightness, RawOccupancyIs, RawScheduleTimer,
+    RawDecreaseBrightness, RawIncreaseBrightness, RawOccupancyIs, RawScheduleTimer, RawSendIrCode,
     RawSetBrightness, RawSetColor, RawSetColorTemperature, RawSwitchIs,
 };
 use crate::compile::diagnostic::Diagnostic;
@@ -460,6 +460,21 @@ impl Lowerer<'_> {
                 let key = self.as_name(&payload, "cancel_timer", at)?;
                 self.referenced_keys.insert(key.clone());
                 Command::CancelTimer { key: TimerKey(key) }
+            }
+            "send_ir_code" => {
+                let ir: RawSendIrCode = self.payload(payload, "send_ir_code", at)?;
+                let device = self.resolve_device(&ir.device, at)?;
+                self.require_cap(
+                    device,
+                    &ir.device,
+                    CapabilityKind::IrTransmitter,
+                    "send_ir_code",
+                    at,
+                );
+                Command::SendIrCode {
+                    device,
+                    code: ir.code,
+                }
             }
             other => {
                 self.error(

@@ -356,3 +356,49 @@ rules:
         }
     );
 }
+
+#[test]
+fn send_ir_code_requires_ir_transmitter_capability() {
+    let errs = compile_str(
+        r#"
+adapters:
+  z: { type: mock }
+devices:
+  blaster: { adapter: z, capabilities: [switch] }
+rules:
+  bad:
+    when: { timer: t }
+    then:
+      - send_ir_code: { device: blaster, code: "abc123" }
+"#,
+    )
+    .expect_err("missing ir_transmitter capability");
+    assert!(format!("{errs}").contains("E_MISSING_CAPABILITY"));
+}
+
+#[test]
+fn send_ir_code_compiles_to_runtime_command() {
+    let cfg = compile_str(
+        r#"
+adapters:
+  z: { type: mock }
+devices:
+  ac_blaster: { adapter: z, capabilities: [ir_transmitter] }
+rules:
+  turn_ac_off:
+    when: { timer: t }
+    then:
+      - send_ir_code: { device: ac_blaster, code: "BW4jahFCAuAXAQGMBsADAHLgAgvAE4AH4BcBwCeAB+AFRw8vm24jqwhCAv//biOrCEIC" }
+"#,
+    )
+    .expect("should compile");
+
+    let blaster = cfg.device_id("ac_blaster").unwrap();
+    assert_eq!(
+        cfg.rules[0].commands[0],
+        domiform::Command::SendIrCode {
+            device: blaster,
+            code: "BW4jahFCAuAXAQGMBsADAHLgAgvAE4AH4BcBwCeAB+AFRw8vm24jqwhCAv//biOrCEIC".into(),
+        }
+    );
+}

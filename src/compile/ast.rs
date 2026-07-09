@@ -218,3 +218,11 @@ pub struct RawScheduleTimer {
     /// Delay like `10m` / `30s` / `1h`.
     pub after: String,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSendIrCode {
+    pub device: String,
+    /// Pre-learned IR payload in base64 (zigbee2mqtt `ir_code_to_send` form).
+    pub code: String,
+}

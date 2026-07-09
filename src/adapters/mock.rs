@@ -63,6 +63,7 @@ impl Adapter for MockDeviceAdapter {
                     state: CapabilityState::ColorTemperature(*mireds),
                 }])
             }
+            Command::SendIrCode { .. } => DispatchOutcome::ok(),
             _ => DispatchOutcome::ok(),
         }
     }
