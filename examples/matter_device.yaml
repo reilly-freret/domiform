@@ -6,9 +6,10 @@
 # projects devices declared under the southbound `z2m` adapter, so the YAML stays
 # the single source of truth.
 #
-# Each exposed device becomes a bridged accessory under its domiform name (via the
-# bridged endpoint's node_label). Run it, then scan the pairing QR printed to the
-# log into your Home app.
+# Each exposed device becomes a bridged Matter accessory (Switch / Brightness).
+# Note: Apple Home often ignores bridged Matter device names and shows generic
+# labels ("Light", …) — that is a controller-side quirk, not a config bug. Run
+# it, then scan the pairing QR printed to the log into your Home app.
 system:
   timezone: America/New_York
   latitude: 40.71

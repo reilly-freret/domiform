@@ -106,16 +106,15 @@ pub fn device_type_for(caps: &[CapabilityKind]) -> MatterDeviceType {
 
 /// Whether this adapter can currently project a given capability onto a Matter
 /// cluster attribute. Drives both endpoint construction (which clusters to add)
-/// and the publish/poll mapping. Write-only or engine-internal capabilities
+/// and the publish/poll mapping.
+///
+/// Only Switch and Brightness are wired in the live node today. Occupancy,
+/// Battery, Color, and ColorTemperature are deliberately *not* admitted here —
+/// admitting them without cluster handlers would advertise the wrong device type
+/// (e.g. an occupancy sensor as an On/Off light). Engine-internal capabilities
 /// (IR, time-of-day, sun) are never exposed.
 pub fn capability_is_exposable(kind: CapabilityKind) -> bool {
-    matches!(
-        kind,
-        CapabilityKind::Switch
-            | CapabilityKind::Brightness
-            | CapabilityKind::Occupancy
-            | CapabilityKind::Battery
-    )
+    matches!(kind, CapabilityKind::Switch | CapabilityKind::Brightness)
 }
 
 /// Adapter that projects a set of domiform devices as a Matter node.
@@ -234,9 +233,10 @@ pub static PLUGIN: Plugin = Plugin;
 /// in the hand-authored YAML. Persisting it is what lets a paired controller
 /// survive a domiform restart instead of going "No Response" until re-paired.
 ///
-/// When unset, it defaults to `<system.runtime_storage_path>/homekit.<hash>.state`,
+/// When unset, it defaults to `<system.runtime_storage_path>/matter.<hash>.state`,
 /// where `<hash>` is derived from the adapter's config name — stable across
-/// restarts (idempotent) and distinct per adapter (no collisions).
+/// restarts (idempotent) and distinct per adapter (no collisions). The path is a
+/// *directory* (`DirKvBlobStore`), despite the historical `_file` config key name.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MatterDeviceConfig {
@@ -252,9 +252,9 @@ struct MatterDeviceConfig {
     interface: Option<String>,
 }
 
-/// The default state-file path for a `matter_device` adapter: a stable,
-/// per-adapter filename under the host's runtime storage directory. The filename
-/// hash is derived from the adapter name so it is deterministic (same file every
+/// The default fabric-store path for a `matter_device` adapter: a stable,
+/// per-adapter directory under the host's runtime storage directory. The name
+/// hash is derived from the adapter name so it is deterministic (same path every
 /// run) yet collision-free across multiple `matter_device` adapters.
 pub fn default_state_file(runtime_dir: &std::path::Path, adapter_name: &str) -> std::path::PathBuf {
     // A small, dependency-free FNV-1a hash of the adapter name → hex. We only need
@@ -264,7 +264,7 @@ pub fn default_state_file(runtime_dir: &std::path::Path, adapter_name: &str) -> 
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    runtime_dir.join(format!("homekit.{hash:016x}.state"))
+    runtime_dir.join(format!("matter.{hash:016x}.state"))
 }
 
 /// This adapter's effective state-file path: the explicit `runtime_storage_file`
@@ -327,8 +327,9 @@ impl AdapterPlugin for Plugin {
         ctx: &super::NorthboundCtx,
     ) -> Option<Box<dyn NorthboundAdapter>> {
         // Project each exposed device that carries at least one exposable
-        // capability. A device with none (an events-only remote, say) contributes
-        // no endpoint and is skipped.
+        // capability. A device with none (an events-only remote, occupancy-only
+        // sensor, …) contributes no endpoint and is skipped — with a warning so
+        // `expose: [motion]` doesn't silently vanish from the Matter bridge.
         let exposed: Vec<ExposedDevice> = exposed
             .iter()
             .filter_map(|d| {
@@ -339,6 +340,11 @@ impl AdapterPlugin for Plugin {
                     .filter(|c| capability_is_exposable(*c))
                     .collect();
                 if caps.is_empty() {
+                    log::warn!(
+                        "[matter_device] skipping '{}': no Switch/Brightness capability \
+                         (only those are projected onto Matter endpoints today)",
+                        d.name
+                    );
                     return None;
                 }
                 Some(ExposedDevice {
@@ -370,7 +376,7 @@ impl AdapterPlugin for Plugin {
 /// store to the resolved state directory. See [`real_transport`].
 mod real_transport;
 
-/// The maximum number of devices a single `matter_device` adapter can expose,
-/// re-exported for the resolver's `E_TOO_MANY_EXPOSED` check. This is the
-/// compile-time capacity of the live node's bridged-endpoint handler chain.
+/// Soft cap on devices a single `matter_device` adapter can expose, re-exported
+/// for the resolver's `E_TOO_MANY_EXPOSED` check (`DynamicNode` capacity — the
+/// handler chain itself is fixed-depth regardless of N).
 pub use real_transport::MAX_MATTER_DEVICES;

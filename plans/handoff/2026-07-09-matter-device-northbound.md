@@ -189,12 +189,12 @@ notes here are corrected. See design doc Phase 2b/2c for the authoritative recor
 ### Remaining open items
 
 1. **Capability coverage.** Only Switch→OnOff and Brightness→LevelControl are wired
-   in the live node. `capability_is_exposable`
-   ([`matter_device/mod.rs`](../../src/adapters/matter_device/mod.rs)) also admits
-   Occupancy/Battery, but the node has no handlers for them yet. To add: Color→
-   ColorControl Hue/Sat (reuse [`src/color.rs`](../../src/color.rs)),
+   in the live node. `capability_is_exposable` deliberately admits **only** those
+   two — Occupancy/Battery/Color/CT are *not* projected until cluster handlers
+   exist (admitting them earlier advertised sensors as On/Off lights). To add:
+   Color→ColorControl Hue/Sat (reuse [`src/color.rs`](../../src/color.rs)),
    ColorTemperature→ColorControl (mireds), Occupancy→OccupancySensing,
-   Battery→PowerSource.
+   Battery→PowerSource — and wire `device_type_for` into `build_node` when doing so.
 
 2. **Production attestation (low priority / not a coding task).** We use rs-matter's
    *test* Device Attestation Certificate (`TEST_DEV_ATT`), which chains to a test PAA
@@ -207,9 +207,13 @@ notes here are corrected. See design doc Phase 2b/2c for the authoritative recor
    business/compliance step. Don't spend a coding session on this.
 
 3. **Housekeeping.** A stray `runtime/` dir (a fabric store from local test runs)
-   is untracked at repo root.
-   The `matter_device.runtime_storage_file` naming still says `homekit.<hash>.state`;
-   consider renaming to `matter.<hash>.state` for accuracy.
+   is untracked at repo root (gitignored). Default fabric-store path is now
+   `matter.<hash>.state` (was `homekit.*`).
+
+4. **Known consistency gaps (not yet fixed).** Controller writes update Matter
+   cells optimistically before southbound echo; no startup state sync into the
+   node; node-thread death is log-only. See audit notes in session that abandoned
+   the HAP sidecar initiative.
 
 ---
 

@@ -99,7 +99,7 @@
             },
             "runtime_storage_file": {
               "type": "string",
-              "description": "Override the Matter fabric/commissioning store path. Defaults to <runtime_storage_path>/homekit.<hash>.state. Runtime data, not configuration — persisting it keeps a paired controller from going 'No Response' after a restart."
+              "description": "Override the Matter fabric/commissioning store directory. Defaults to <runtime_storage_path>/matter.<hash>.state (a DirKvBlobStore directory despite the `_file` key name). Runtime data, not configuration — persisting it keeps a paired controller from going 'No Response' after a restart."
             },
             "interface": {
               "type": "string",

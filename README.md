@@ -72,13 +72,13 @@ registers the emulators if they aren't already present.)
 ## TODO
 
 - [x] Zigbee2mqtt adapter
-- [x] Matter adapter
+- [x] Matter adapter (southbound: control Matter devices via `python-matter-server`)
 - [x] Z-Wave adapter
-- [x] HomeKit adapter — via the `matter_device` northbound adapter: domiform
-      exposes its devices as a native Matter node, so Apple Home / Google Home /
-      Alexa control them through one app. (Protocol mapping and config wiring are
-      in place; the live `rs-matter` node + commissioning persistence are the
-      remaining step.)
+- [x] Northbound Matter bridge (`matter_device`): expose domiform devices as a
+      native Matter node so Apple Home / Google Home / Alexa can control them.
+      Switch + Brightness are live; Occupancy / Battery / Color are not yet
+      projected (admitting them without cluster handlers would advertise the
+      wrong device type).
 - [ ] Documentation
 - [ ] Published binaries
 - [x] Dockerfile

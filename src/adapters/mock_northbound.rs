@@ -1,12 +1,11 @@
 //! A test-only **northbound** adapter, the northbound analogue of
 //! [`MockDeviceAdapter`](super::MockDeviceAdapter). It proves the entire
-//! northbound seam — state fan-out inward, consumer input outward — with zero HAP
-//! dependency and full determinism, so Phase 1 can be exercised before the real
-//! `hap-rs` adapter (Phase 2) exists.
+//! northbound seam — state fan-out outward, consumer input inward — with zero
+//! protocol dependency and full determinism.
 //!
 //! Two facets, matching a real northbound adapter:
 //! * **Observer**: every `state_folded` the engine delivers is recorded (this is
-//!   the mirror a real bridge would push to HomeKit).
+//!   the mirror a real bridge would push to Matter / a future frontend).
 //! * **Adapter**: `tick` drains any queued *consumer writes* into inbound
 //!   `Event::RequestedChange`s — the same pull-after-`Waker` path a Matter
 //!   controller's attribute write (from Apple Home, Google, Alexa, …) would take.
@@ -102,8 +101,9 @@ impl Adapter for MockNorthbound {
 
 /// Registers the mock northbound adapter (`type: mock_northbound`). Its config is
 /// just an `expose` spec, so the config/resolve/build path can be tested without
-/// HAP. The engine-level shared handle is only available to tests that construct
-/// the adapter directly; the config path builds a fresh (unobserved) instance.
+/// a real protocol. The engine-level shared handle is only available to tests that
+/// construct the adapter directly; the config path builds a fresh (unobserved)
+/// instance.
 #[derive(Debug)]
 pub struct Plugin;
 pub static PLUGIN: Plugin = Plugin;

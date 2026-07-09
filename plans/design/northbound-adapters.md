@@ -14,13 +14,10 @@ the proving ground for the concept.
 > This is a strict *improvement*, not a workaround: domiform appears as a native
 > **Matter device**, which Apple Home, Google Home and Alexa all commission
 > directly — so "expose my devices to the Home app" generalizes to "expose them to
-> any Matter controller." The northbound/southbound abstraction (Phases 0–1) was
-> re-audited against `rs-matter`'s actual device/threading model and needed no
-> rework; the two decisions we were least sure of (`RequestedChange` carrying
-> `CapabilityState`, and the tick+observer combined trait) are the ones `rs-matter`
-> *confirms* — a controller writes cluster *attribute values* (desired state), and
-> the node runs its own `block_on(select…)` loop on a background thread exactly
-> like z2m's network thread.
+> any Matter controller." A later HAP-sidecar proposal (for Apple naming fidelity)
+> was **abandoned**: stock HAP-python `HttpBridge` is push-only, and no maintained
+> out-of-process bidirectional HAP server exists. `matter_device` is the sole
+> northbound path.
 
 ## 1. The concept: two polarities of one trait
 
@@ -385,8 +382,10 @@ adapters or the deterministic core.
     `build.rs`, no `recursion_limit` bump.
 - **More capabilities:** Color→ColorControl Hue/Sat (reuse `color.rs`);
   ColorTemperature→ColorControl (mireds); Occupancy→OccupancySensing;
-  Battery→PowerSource. (Phase 2 wired their *exposability*; the cluster handlers
-  land here — Switch/Brightness are done.)
+  Battery→PowerSource. (Phase 2 originally admitted Occupancy/Battery in
+  `capability_is_exposable` without handlers — that advertised sensors as On/Off
+  lights. Fixed: only Switch/Brightness are exposable until their clusters land.)
+  Switch/Brightness are done.
 - **Production attestation:** replace test DAC/PAI with real device-attestation
   certificates for non-development use.
 

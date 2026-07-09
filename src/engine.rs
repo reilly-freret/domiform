@@ -87,7 +87,7 @@ pub struct Engine {
     state: StateStore,
     rules: Vec<Rule>,
     adapters: Vec<Box<dyn Adapter>>,
-    /// Northbound adapters (homekit, …). Held separately from `adapters` because
+    /// Northbound adapters (`matter_device`, …). Held separately from `adapters` because
     /// they are driven on both paths: `tick`/`next_wake` like an adapter (to
     /// drain consumer input and schedule wakes) *and* `state_folded` like an
     /// observer (to mirror engine state outward). They bind no devices, so they
@@ -230,9 +230,9 @@ impl Engine {
         for adapter in &mut self.adapters {
             produced.extend(adapter.tick(self.now));
         }
-        // Northbound adapters tick too: this is how consumer input (a Home-app
-        // tap queued on the HAP thread) drains into inbound `Event`s — the same
-        // pull-after-`Waker` path a southbound device report takes.
+        // Northbound adapters tick too: a controller write (e.g. Matter attribute
+        // write) drains into inbound `Event`s — the same pull-after-`Waker` path
+        // a southbound device report takes.
         for adapter in &mut self.northbound {
             produced.extend(adapter.tick(self.now));
         }

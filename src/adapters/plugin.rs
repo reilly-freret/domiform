@@ -37,9 +37,9 @@ pub enum Polarity {
     /// domiform is the controller; the protocol is downstream (zigbee2mqtt,
     /// matter, zwavejs). Owns/commands the devices bound to it.
     Southbound,
-    /// domiform is the source of truth; the consumer is upstream (homekit, and
-    /// later REST/web/voice). Exposes devices declared elsewhere; binds none of
-    /// its own. Registers as an `Observer` to mirror engine state.
+    /// domiform is the source of truth; the consumer is upstream (`matter_device`,
+    /// and later REST/web/voice). Exposes devices declared elsewhere; binds none
+    /// of its own. Registers as an `Observer` to mirror engine state.
     Northbound,
 }
 
@@ -78,7 +78,7 @@ pub trait AdapterPlugin: Sync + std::fmt::Debug {
 
     /// This adapter's data-flow polarity. Defaults to [`Polarity::Southbound`],
     /// so every existing protocol adapter is unaffected; a northbound adapter
-    /// (homekit, …) overrides it. The resolver and builder use it to decide
+    /// (`matter_device`, …) overrides it. The resolver and builder use it to decide
     /// whether the adapter is built with its *bound* devices (southbound) or the
     /// devices it *exposes* (northbound), and whether to register it as an
     /// `Observer` for state fan-out.

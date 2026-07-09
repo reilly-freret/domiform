@@ -19,12 +19,11 @@
 //! **Topology:** domiform presents as a **Matter bridge** — root endpoint (0), an
 //! Aggregator endpoint (1), then one **bridged** endpoint per exposed device. Each
 //! bridged endpoint advertises `DEV_TYPE_BRIDGED_NODE` + its light device type and
-//! carries a `BridgedDeviceBasicInformation` cluster whose `node_label` we serve
-//! with the device's domiform name — that is what makes it show up as e.g.
-//! "living_room_lamp" in Apple Home rather than a generic "Matter Accessory". (The
-//! bridge shape is the same whether one or many devices are exposed; this module is
-//! currently wired for exactly one bridged endpoint — the N-device generalization
-//! uses `DynamicNode<'_, N>` + a generated handler chain, see the design doc.)
+//! carries a `BridgedDeviceBasicInformation` cluster whose naming attributes we
+//! serve with the device's domiform name (spec-correct; some controllers — notably
+//! Apple Home — still display their own defaults for bridged Matter devices).
+//! Multi-device uses `DynamicNode` metadata + fixed-depth dispatch shims (see
+//! [`bridge`]); chain depth does not grow with N.
 //!
 //! **Commissioning:** `rs-matter`'s built-in *test* attestation + commissioning
 //! data (dev passcode `20202021`, discriminator `3840`) — correct for bring-up /
@@ -85,6 +84,26 @@ pub(crate) mod level {
     pub fn matter_to_pct(level: u8) -> u8 {
         let level = level.clamp(1, 254) as u16;
         (((level - 1) * 100 + 126) / 253) as u8
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn pct_bounds() {
+            assert_eq!(pct_to_matter(0), 1);
+            assert_eq!(pct_to_matter(100), 254);
+            assert_eq!(pct_to_matter(255), 254); // clamped
+        }
+
+        #[test]
+        fn roundtrip_common_values() {
+            for pct in [0u8, 1, 25, 50, 75, 99, 100] {
+                let back = matter_to_pct(pct_to_matter(pct));
+                assert!(back.abs_diff(pct) <= 1, "pct {pct} → matter → {back}");
+            }
+        }
     }
 }
 

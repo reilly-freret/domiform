@@ -15,7 +15,9 @@
 //! | `clock.rs` | [`ClockAdapter`] — synthetic time-of-day / sun device |
 //! | `zigbee2mqtt.rs` | [`Zigbee2MqttAdapter`] — zigbee2mqtt over MQTT |
 //! | `matter.rs` | [`MatterAdapter`] — Matter via `python-matter-server` |
+//! | `matter_device/` | [`MatterDeviceAdapter`] — northbound: expose devices as a Matter bridge |
 //! | `zwavejs.rs` | [`ZwaveAdapter`] — Z-Wave via `zwave-js-server` |
+//! | `mock_northbound.rs` | [`MockNorthbound`] — in-memory northbound seam (tests) |
 //!
 //! **To add a protocol adapter** (Z-Wave, Matter, ESPHome, …): add a module
 //! here, implement [`Adapter`] for its runtime type and [`AdapterPlugin`] for a
@@ -106,11 +108,11 @@ impl DispatchOutcome {
     }
 }
 
-/// A northbound adapter (homekit, and later REST/web/voice): it both *observes*
-/// engine state (to mirror it to a consumer) and behaves as an *adapter* (its
-/// `tick` drains consumer input — a Home-app tap — into inbound `Event`s, and
-/// `next_wake` participates in the host's sleep). It binds no devices, so its
-/// `dispatch` is never called; the `Adapter` bound is for `tick`/`next_wake`.
+/// A northbound adapter (e.g. `matter_device`, and later REST/web/voice): it both
+/// *observes* every folded state change (so it can mirror them outward) and is
+/// *ticked* so consumer input drains into inbound `Event`s. It binds no devices,
+/// so its `dispatch` is never called; the `Adapter` bound is for `tick` /
+/// `next_wake`.
 ///
 /// The engine holds these in a dedicated list so it can both tick them *and* fan
 /// `state_folded` to them, without every ordinary observer paying for a `tick`.

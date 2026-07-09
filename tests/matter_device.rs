@@ -1,11 +1,10 @@
-//! Phase 2: the `matter_device` northbound adapter, proven with the in-memory
+//! The `matter_device` northbound adapter, proven with the in-memory
 //! `InMemoryMatter` transport (no rs-matter node, no network). Covers the pure
 //! `CapabilityState` ↔ Matter mapping, the adapter's two facets (mirror outward on
 //! fold, controller write inward on tick), and the config/compile/build path.
 //!
-//! The real rs-matter-backed transport is intentionally a no-op stub this phase
-//! (its commissioning/fabric persistence is being designed separately), so these
-//! tests exercise everything *except* the live node.
+//! The live `rs-matter` node is exercised by pairing a real controller; these
+//! tests cover everything *except* that network path.
 
 use domiform::adapters::matter_device::{
     capability_is_exposable, device_type_for, ExposedDevice, InMemoryMatter, MatterDeviceAdapter,
@@ -44,14 +43,20 @@ fn occupancy_only_is_a_sensor() {
 }
 
 #[test]
-fn engine_internal_capabilities_are_not_exposable() {
-    // Time/sun/IR must never be projected onto a Matter cluster.
+fn only_switch_and_brightness_are_exposable() {
+    // Wired in the live node today.
+    assert!(capability_is_exposable(CapabilityKind::Switch));
+    assert!(capability_is_exposable(CapabilityKind::Brightness));
+    // Declared in the model but not yet projected (would advertise the wrong
+    // device type if admitted without cluster handlers).
+    assert!(!capability_is_exposable(CapabilityKind::Occupancy));
+    assert!(!capability_is_exposable(CapabilityKind::Battery));
+    assert!(!capability_is_exposable(CapabilityKind::Color));
+    assert!(!capability_is_exposable(CapabilityKind::ColorTemperature));
+    // Engine-internal / write-only — never projected.
     assert!(!capability_is_exposable(CapabilityKind::TimeOfDay));
     assert!(!capability_is_exposable(CapabilityKind::SunUp));
     assert!(!capability_is_exposable(CapabilityKind::IrTransmitter));
-    // Ordinary device capabilities are.
-    assert!(capability_is_exposable(CapabilityKind::Switch));
-    assert!(capability_is_exposable(CapabilityKind::Brightness));
 }
 
 // --- adapter facets (via InMemoryMatter) -------------------------------------
@@ -80,6 +85,26 @@ fn state_fold_publishes_to_the_transport() {
             (LIGHT, CapabilityState::Switch(true)),
             (LIGHT, CapabilityState::Brightness(70)),
         ]
+    );
+}
+
+#[test]
+fn occupancy_and_battery_are_not_published() {
+    let transport = InMemoryMatter::new();
+    let mut adapter = MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Switch],
+        }],
+        Box::new(transport.clone()),
+    );
+    adapter.state_folded(LIGHT, &CapabilityState::Occupancy(true));
+    adapter.state_folded(LIGHT, &CapabilityState::Battery(80));
+    adapter.state_folded(LIGHT, &CapabilityState::Switch(true));
+    assert_eq!(
+        transport.published(),
+        vec![(LIGHT, CapabilityState::Switch(true))]
     );
 }
 
@@ -225,7 +250,7 @@ devices:
     );
 
     let mut engine = build_engine(&cfg);
-    engine.start(); // must not panic even though the real transport is a stub
+    engine.start(); // must not panic (spawns the live Matter node thread)
 }
 
 // --- runtime storage path resolution -----------------------------------------
@@ -243,7 +268,7 @@ fn default_state_file_is_stable_and_under_the_runtime_dir() {
     assert!(a.starts_with("/var/lib/domiform"));
     let name = a.file_name().unwrap().to_string_lossy();
     assert!(
-        name.starts_with("homekit.") && name.ends_with(".state"),
+        name.starts_with("matter.") && name.ends_with(".state"),
         "{name}"
     );
 }

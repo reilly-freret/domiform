@@ -395,7 +395,7 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
 
     // --- whole-program lints ------------------------------------------------
     for (idx, adapter) in adapters.iter().enumerate() {
-        // A northbound adapter (homekit, …) binds no devices by design — it
+        // A northbound adapter (matter_device, …) binds no devices by design — it
         // *exposes* them — so "unused" doesn't apply. Its own emptiness check is
         // "exposes nothing", handled with the expose validation below.
         let northbound = adapter
@@ -454,10 +454,11 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
             None => {}
         }
 
-        // Capacity limit for the `matter_device` adapter: the live rs-matter bridge
-        // node has a compile-time-fixed number of bridged-endpoint handler slots
-        // (`MAX_MATTER_DEVICES`). Exposing more is a clear compile error rather than
-        // a confusing runtime truncation.
+        // Soft capacity limit for the `matter_device` adapter: the live bridge uses
+        // fixed-depth dispatch shims (not a per-device handler chain), so this is a
+        // resolver guard on `DynamicNode` capacity (`MAX_MATTER_DEVICES`), not a
+        // compile-time type-size cap. Exposing more is a clear compile error rather
+        // than a confusing runtime truncation.
         if adapter.plugin.map(|p| p.type_tag()) == Some("matter_device") {
             let exposed_count = match plugin.expose_spec(&adapter.config) {
                 Some(crate::adapters::ExposeSpec::Named(names)) => names.len(),
