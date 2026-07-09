@@ -46,7 +46,11 @@
         "name": { "type": "string" },
         "timezone": { "type": "string", "description": "IANA tz, e.g. America/New_York." },
         "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
-        "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+        "runtime_storage_path": {
+          "type": "string",
+          "description": "Directory for features that require runtime state (e.g. the matter_device Matter fabric store). This is runtime data, not configuration. Defaults to the config file's own directory."
+        }
       }
     },
 
@@ -79,6 +83,29 @@
             "url": { "type": "string", "description": "zwave-js-server WebSocket URL, e.g. ws://host:3000." }
           },
           "required": ["url"]
+        },
+        {
+          "additionalProperties": false,
+          "description": "Northbound: exposes domiform's own devices as a native Matter node, so Apple Home / Google Home / Alexa can commission and control them. Binds no devices of its own.",
+          "properties": {
+            "type": { "const": "matter_device" },
+            "expose": {
+              "description": "Which declared devices to project onto the Matter node: the keyword `all`, or a list of device names.",
+              "default": "all",
+              "oneOf": [
+                { "const": "all" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            },
+            "runtime_storage_file": {
+              "type": "string",
+              "description": "Override the Matter fabric/commissioning store directory. Defaults to <runtime_storage_path>/matter.<hash>.state (a DirKvBlobStore directory despite the `_file` key name). Runtime data, not configuration — persisting it keeps a paired controller from going 'No Response' after a restart."
+            },
+            "interface": {
+              "type": "string",
+              "description": "Force the network interface for Matter mDNS discovery (e.g. 'en0'). Auto-selected by default, skipping VPN/tunnel interfaces. Set if the device isn't discoverable."
+            }
+          }
         },
         {
           "additionalProperties": false,

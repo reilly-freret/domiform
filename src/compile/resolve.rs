@@ -46,6 +46,25 @@ pub struct SystemConfig {
     pub timezone: String,
     pub latitude: f64,
     pub longitude: f64,
+    /// The user's literal `runtime_storage_path`, or `None` if unset. Kept as
+    /// written (the compiler is filesystem-agnostic); the *effective* directory is
+    /// resolved by the host via [`runtime_storage_dir`], which supplies the config
+    /// file's directory as the default base.
+    pub runtime_storage_path: Option<String>,
+}
+
+impl SystemConfig {
+    /// The effective directory for runtime state. Returns the user's
+    /// `runtime_storage_path` if set; otherwise `config_dir` — the directory of the
+    /// config file, which the host knows and the compiler does not. Using the
+    /// config's own directory (rather than the process cwd) keeps the location
+    /// stable no matter where `domiform` is launched from.
+    pub fn runtime_storage_dir(&self, config_dir: &std::path::Path) -> std::path::PathBuf {
+        match &self.runtime_storage_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => config_dir.to_path_buf(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -376,11 +395,89 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
 
     // --- whole-program lints ------------------------------------------------
     for (idx, adapter) in adapters.iter().enumerate() {
-        if !used_adapters.contains(&idx) {
+        // A northbound adapter (matter_device, …) binds no devices by design — it
+        // *exposes* them — so "unused" doesn't apply. Its own emptiness check is
+        // "exposes nothing", handled with the expose validation below.
+        let northbound = adapter
+            .plugin
+            .is_some_and(|p| p.polarity() == crate::adapters::Polarity::Northbound);
+        if !northbound && !used_adapters.contains(&idx) {
             diags.push(
                 Diagnostic::warning("E_UNUSED_ADAPTER", "adapter is not used by any device")
                     .at(format!("adapter '{}'", adapter.name)),
             );
+        }
+    }
+
+    // --- northbound `expose` validation -------------------------------------
+    // A northbound adapter names the devices it exposes (declared under other
+    // adapters). Check each name resolves; an empty exposure is a warning (the
+    // adapter would surface nothing to its consumer). Southbound plugins return
+    // no `ExposeSpec`, so this loop skips them.
+    for adapter in &adapters {
+        let Some(plugin) = adapter.plugin else {
+            continue;
+        };
+        match plugin.expose_spec(&adapter.config) {
+            Some(crate::adapters::ExposeSpec::Named(names)) => {
+                if names.is_empty() {
+                    diags.push(
+                        Diagnostic::warning(
+                            "E_EMPTY_EXPOSE",
+                            "adapter exposes no devices, so its consumer sees nothing",
+                        )
+                        .at(format!("adapter '{}'", adapter.name)),
+                    );
+                }
+                for n in &names {
+                    if !device_index.contains_key(n) {
+                        diags.push(
+                            Diagnostic::error(
+                                "E_UNKNOWN_EXPOSED_DEVICE",
+                                format!("exposes unknown device '{n}'"),
+                            )
+                            .at(format!("adapter '{}'", adapter.name)),
+                        );
+                    }
+                }
+            }
+            Some(crate::adapters::ExposeSpec::All) if devices.is_empty() => {
+                diags.push(
+                    Diagnostic::warning(
+                        "E_EMPTY_EXPOSE",
+                        "adapter exposes all devices, but none are declared",
+                    )
+                    .at(format!("adapter '{}'", adapter.name)),
+                );
+            }
+            Some(crate::adapters::ExposeSpec::All) => {}
+            None => {}
+        }
+
+        // Soft capacity limit for the `matter_device` adapter: the live bridge uses
+        // fixed-depth dispatch shims (not a per-device handler chain), so this is a
+        // resolver guard on `DynamicNode` capacity (`MAX_MATTER_DEVICES`), not a
+        // compile-time type-size cap. Exposing more is a clear compile error rather
+        // than a confusing runtime truncation.
+        if adapter.plugin.map(|p| p.type_tag()) == Some("matter_device") {
+            let exposed_count = match plugin.expose_spec(&adapter.config) {
+                Some(crate::adapters::ExposeSpec::Named(names)) => names.len(),
+                Some(crate::adapters::ExposeSpec::All) => devices.len(),
+                None => 0,
+            };
+            let max = crate::adapters::matter_device::MAX_MATTER_DEVICES;
+            if exposed_count > max {
+                diags.push(
+                    Diagnostic::error(
+                        "E_TOO_MANY_EXPOSED",
+                        format!(
+                            "matter_device can expose at most {max} devices, but {exposed_count} are exposed; \
+                             narrow `expose`"
+                        ),
+                    )
+                    .at(format!("adapter '{}'", adapter.name)),
+                );
+            }
         }
     }
     // Each adapter validates its own device addressing rules (friendly_name,
@@ -459,6 +556,7 @@ fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
         timezone,
         latitude: raw.system.latitude.unwrap_or(0.0),
         longitude: raw.system.longitude.unwrap_or(0.0),
+        runtime_storage_path: raw.system.runtime_storage_path.clone(),
     }
 }
 

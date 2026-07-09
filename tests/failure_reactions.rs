@@ -104,7 +104,7 @@ fn cascade_guard_terminates_a_failure_storm() {
     let mut engine = Engine::new();
     let dead = engine.add_adapter(Box::new(DeadAdapter));
     engine.bind_device(LIGHT, dead);
-    engine.set_observer(Box::new(rec.clone()));
+    engine.add_observer(Box::new(rec.clone()));
     engine.set_max_cascade_depth(4);
 
     // Kick it off.

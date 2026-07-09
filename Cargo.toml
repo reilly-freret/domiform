@@ -33,6 +33,25 @@ croner = "3.0.1"
 # Glob expansion for `--check`, so users can validate `examples/*.yaml` in one
 # invocation without a shell loop. Tiny, no transitive deps of note.
 glob = "0.3.1"
+# The `matter_device` *northbound* adapter: domiform exposes its devices as a
+# native Matter node on the LAN, which Apple Home / Google / Alexa commission
+# directly. Pure-Rust (RustCrypto, no openssl/-sys), so the static musl binary is
+# preserved. Its own async event loop runs on a background thread behind the
+# `MatterTransport` seam — the engine stays single-threaded and synchronous, and
+# the pure state↔cluster mapping is unit-tested without a network (as with z2m's
+# `MqttTransport`). `async-io`/`futures-lite` are the runtime rs-matter's own
+# examples use; the adapter confines them to that thread.
+rs-matter = "0.2.0"
+async-io = "2"
+futures-lite = "2"
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+log = "0.4.33"
+socket2 = "0.6.4"
+if-addrs = "0.15.0"
+rand = { version = "0.8", features = ["std", "std_rng"] }
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
+env_logger = "0.11.11"
 
 [dev-dependencies]
 serde_json = "1.0.150"

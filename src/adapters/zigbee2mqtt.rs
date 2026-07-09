@@ -478,9 +478,20 @@ mod rumqttc_transport {
 
             let (tx, inbound) = mpsc::channel();
             thread::spawn(move || {
+                // rumqttc's `iter()` reconnects on its own, but yields `Err`
+                // *immediately* on each failed attempt — so a down/unreachable
+                // broker spins this loop as fast as the CPU allows, flooding the
+                // log. Throttle the error path: sleep before the next reconnect
+                // attempt, and collapse a run of identical errors into a single
+                // line plus a periodic "still failing" note.
+                const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+                let mut last_err: Option<String> = None;
+                let mut repeat: u32 = 0;
                 for event in connection.iter() {
                     match event {
                         Ok(MqttEvent::Incoming(Packet::Publish(p))) => {
+                            last_err = None;
+                            repeat = 0;
                             let _ = tx.send(MqttMessage {
                                 topic: p.topic,
                                 payload: p.payload.to_vec(),
@@ -490,10 +501,30 @@ mod rumqttc_transport {
                                 w.wake();
                             }
                         }
-                        // The connection self-reconnects; surface errors so a
-                        // broker problem isn't silently swallowed.
-                        Err(e) => eprintln!("[mqtt] connection error: {e:?}"),
-                        Ok(_) => {}
+                        Ok(_) => {
+                            last_err = None;
+                            repeat = 0;
+                        }
+                        // Surface a broker problem, but only once per distinct
+                        // error (with an occasional repeat count), then back off so
+                        // the reconnect loop doesn't busy-spin.
+                        Err(e) => {
+                            let msg = format!("{e:?}");
+                            if last_err.as_deref() != Some(&msg) {
+                                eprintln!("[mqtt] connection error: {msg}");
+                                last_err = Some(msg);
+                                repeat = 0;
+                            } else {
+                                repeat += 1;
+                                if repeat.is_multiple_of(12) {
+                                    eprintln!(
+                                        "[mqtt] still unable to connect ({repeat} attempts); retrying every {}s",
+                                        RECONNECT_DELAY.as_secs()
+                                    );
+                                }
+                            }
+                            thread::sleep(RECONNECT_DELAY);
+                        }
                     }
                 }
             });

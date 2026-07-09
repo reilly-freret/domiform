@@ -53,13 +53,16 @@ pub mod state;
 pub mod wake;
 
 pub use adapters::{
-    Adapter, AttrReport, ClockAdapter, ClusterCommand, DeviceKind, DispatchOutcome, EndpointId,
-    MatterAdapter, MatterController, MockDeviceAdapter, MqttMessage, MqttTransport, NodeId,
-    SchedulerAdapter, SetValue, ValueUpdate, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
+    capability_is_exposable, default_state_file, device_type_for, Adapter, AttrReport,
+    ClockAdapter, ClusterCommand, DeviceKind, DispatchOutcome, EndpointId, ExposeSpec,
+    ExposedDevice, InMemoryMatter, MatterAdapter, MatterController, MatterDeviceAdapter,
+    MatterDeviceType, MatterTransport, MockDeviceAdapter, MockNorthbound, MockNorthboundState,
+    MqttMessage, MqttTransport, NodeId, NorthboundAdapter, Polarity, SchedulerAdapter, SetValue,
+    ValueUpdate, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
 };
 pub use compile::{
-    build_engine, build_engine_at, build_engine_with_waker, compile_str, CompileErrors,
-    CompiledConfig, Diagnostic,
+    build_engine, build_engine_at, build_engine_full, build_engine_with_waker,
+    build_engine_with_waker_in, compile_str, CompileErrors, CompiledConfig, Diagnostic,
 };
 pub use engine::{Engine, RetryPolicy};
 pub use ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
