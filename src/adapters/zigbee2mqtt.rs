@@ -12,6 +12,12 @@
 //!   z2m publish ─▶ MqttTransport::poll ─▶ message_to_events ─▶ Event (tick)
 //!   Command ─▶ command_to_publish ─▶ MqttTransport::publish ─▶ z2m /set
 //! ```
+//!
+//! Multi-gang switches (Sonoff 3-gang, dual-channel minis, …) expose per-load
+//! on/off as `state_l1`/`state_l2`/… on one friendly_name. Give each load its own
+//! domiform device with the same `address` and `endpoint: 1`/`2`/…; omit
+//! `endpoint` for ordinary single-load devices (`state`). An events-only device
+//! on the same friendly_name handles detached paddles.
 
 use std::collections::HashMap;
 
@@ -42,28 +48,64 @@ pub trait MqttTransport {
     fn poll(&mut self) -> Vec<MqttMessage>;
 }
 
+/// Multi-gang load index from config `endpoint`. `None` = the single-load `state`
+/// field (the default for ordinary bulbs and relays). `Some(1)` = `state_l1`, etc.
+/// — the Sonoff 3-gang / dual-channel pattern in z2m.
+type LoadChannel = Option<u16>;
+
+/// One domiform device bound to a z2m friendly_name, optionally one load of a
+/// multi-gang switch (`endpoint` in config).
+#[derive(Clone, Debug)]
+struct DeviceTarget {
+    friendly: String,
+    channel: LoadChannel,
+}
+
+/// Normalize config `endpoint` into a load channel. Omitted and `0` both mean the
+/// root/single-load `state` field; `1`/`2`/… select `state_l1`/`state_l2`/….
+fn normalize_channel(endpoint: Option<u16>) -> LoadChannel {
+    match endpoint {
+        None | Some(0) => None,
+        Some(n) => Some(n),
+    }
+}
+
+/// The z2m JSON key for a switch load's on/off state.
+fn switch_field(channel: LoadChannel) -> String {
+    match channel {
+        None => "state".into(),
+        Some(n) => format!("state_l{n}"),
+    }
+}
+
 /// The z2m attribute name to read for a capability, for startup state priming.
 /// `None` capabilities are either synthetic (clock) or event/sleepy attributes
 /// that don't answer a `/get` reliably (occupancy/battery are reported on the
 /// device's own schedule, so priming them just produces broker-side warnings).
-fn read_attr(cap: CapabilityKind) -> Option<&'static str> {
+/// Brightness/color apply only to the root load — multi-gang switches expose
+/// per-load on/off, not per-load dimming.
+fn read_attr(cap: CapabilityKind, channel: LoadChannel) -> Option<String> {
     match cap {
-        CapabilityKind::Switch => Some("state"),
-        CapabilityKind::Brightness => Some("brightness"),
-        CapabilityKind::Color => Some("color"),
-        CapabilityKind::ColorTemperature => Some("color_temp"),
+        CapabilityKind::Switch => Some(switch_field(channel)),
+        CapabilityKind::Brightness if channel.is_none() => Some("brightness".into()),
+        CapabilityKind::Color if channel.is_none() => Some("color".into()),
+        CapabilityKind::ColorTemperature if channel.is_none() => Some("color_temp".into()),
         CapabilityKind::Occupancy
         | CapabilityKind::Battery
         | CapabilityKind::TimeOfDay
         | CapabilityKind::SunUp => None,
+        _ => None,
     }
 }
 
 /// Adapter that bridges a set of zigbee2mqtt devices to the engine.
 pub struct Zigbee2MqttAdapter {
     base_topic: String,
-    by_id: HashMap<DeviceId, String>,
-    by_name: HashMap<String, DeviceId>,
+    by_id: HashMap<DeviceId, DeviceTarget>,
+    /// friendly_name → every domiform device that shares that z2m topic (a
+    /// multi-gang node may be several devices: one per load, plus an events-only
+    /// entry for detached paddles).
+    by_name: HashMap<String, Vec<DeviceId>>,
     /// Per device, the raw z2m `action` string → the declared event's `ActionId`.
     actions: HashMap<DeviceId, HashMap<String, ActionId>>,
     transport: Box<dyn MqttTransport>,
@@ -76,50 +118,61 @@ pub struct Zigbee2MqttAdapter {
 }
 
 impl Zigbee2MqttAdapter {
-    /// `devices` maps each `DeviceId` to its z2m friendly_name (the `address`).
+    /// `devices` maps each `DeviceId` to its z2m friendly_name (the `address`)
+    /// and optional load channel (the `endpoint`; omitted = single-load `state`).
     /// `events` declares the raw `action` strings each device can emit and the
     /// `ActionId` each resolves to (from the device's `events:` config).
     /// `capabilities` is each device's declared capabilities, used to build the
     /// startup `/get` requests that prime device state (see `prime_requests`).
     pub fn new(
         base_topic: impl Into<String>,
-        devices: impl IntoIterator<Item = (DeviceId, String)>,
+        devices: impl IntoIterator<Item = (DeviceId, String, Option<u16>)>,
         events: impl IntoIterator<Item = (DeviceId, String, ActionId)>,
         capabilities: impl IntoIterator<Item = (DeviceId, Vec<CapabilityKind>)>,
         transport: Box<dyn MqttTransport>,
     ) -> Self {
         let base_topic = base_topic.into();
         let mut by_id = HashMap::new();
-        let mut by_name = HashMap::new();
-        for (id, name) in devices {
-            by_name.insert(name.clone(), id);
-            by_id.insert(id, name);
+        let mut by_name: HashMap<String, Vec<DeviceId>> = HashMap::new();
+        for (id, name, endpoint) in devices {
+            by_name.entry(name.clone()).or_default().push(id);
+            by_id.insert(
+                id,
+                DeviceTarget {
+                    friendly: name,
+                    channel: normalize_channel(endpoint),
+                },
+            );
         }
         let mut actions: HashMap<DeviceId, HashMap<String, ActionId>> = HashMap::new();
         for (id, raw, action) in events {
             actions.entry(id).or_default().insert(raw, action);
         }
 
-        // Precompute one `/get` per device that has at least one readable
-        // capability. The payload reads all of them at once: `{"state":"", ...}`.
-        let mut prime_requests = Vec::new();
+        // One merged `/get` per friendly_name: `{"state_l1":"", "brightness":""}`.
+        let mut prime_by_topic: HashMap<String, Value> = HashMap::new();
         for (id, caps) in capabilities {
-            let Some(friendly) = by_id.get(&id) else {
+            let Some(target) = by_id.get(&id) else {
                 continue;
             };
-            let attrs: Vec<&str> = caps.iter().copied().filter_map(read_attr).collect();
+            let attrs: Vec<String> = caps
+                .iter()
+                .copied()
+                .filter_map(|c| read_attr(c, target.channel))
+                .collect();
             if attrs.is_empty() {
                 continue;
             }
-            let body: Value = attrs
-                .into_iter()
-                .map(|a| (a.to_string(), json!("")))
-                .collect();
-            let topic = format!("{base_topic}/{friendly}/get");
-            if let Ok(payload) = serde_json::to_vec(&body) {
-                prime_requests.push((topic, payload));
+            let topic = format!("{base_topic}/{}/get", target.friendly);
+            let body = prime_by_topic.entry(topic).or_insert_with(|| json!({}));
+            for attr in attrs {
+                body[attr] = json!("");
             }
         }
+        let prime_requests: Vec<(String, Vec<u8>)> = prime_by_topic
+            .into_iter()
+            .filter_map(|(topic, body)| serde_json::to_vec(&body).ok().map(|p| (topic, p)))
+            .collect();
 
         Zigbee2MqttAdapter {
             base_topic,
@@ -131,6 +184,10 @@ impl Zigbee2MqttAdapter {
             primed: false,
         }
     }
+
+    fn device_channels(&self) -> HashMap<DeviceId, LoadChannel> {
+        self.by_id.iter().map(|(&id, t)| (id, t.channel)).collect()
+    }
 }
 
 impl Adapter for Zigbee2MqttAdapter {
@@ -138,10 +195,12 @@ impl Adapter for Zigbee2MqttAdapter {
         let Some(device) = cmd.target_device() else {
             return DispatchOutcome::Permanent("command has no target device".into());
         };
-        let Some(friendly) = self.by_id.get(&device) else {
+        let Some(target) = self.by_id.get(&device) else {
             return DispatchOutcome::Permanent("device is not managed by this adapter".into());
         };
-        let Some((topic, payload)) = command_to_publish(&self.base_topic, friendly, cmd) else {
+        let Some((topic, payload)) =
+            command_to_publish(&self.base_topic, &target.friendly, target.channel, cmd)
+        else {
             return DispatchOutcome::Permanent("command unsupported by zigbee2mqtt".into());
         };
         match self.transport.publish(&topic, &payload) {
@@ -168,6 +227,7 @@ impl Adapter for Zigbee2MqttAdapter {
             events.extend(message_to_events(
                 &self.base_topic,
                 &self.by_name,
+                &self.device_channels(),
                 &self.actions,
                 &msg,
             ));
@@ -192,19 +252,35 @@ fn set_transition(body: &mut Value, transition: Option<Millis>) {
 }
 
 /// Translate a canonical command into a z2m `<base>/<friendly>/set` publish.
-/// Returns `None` for commands not addressed to a device (scenes, timers).
-pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(String, Vec<u8>)> {
+/// Returns `None` for commands not addressed to a device (scenes, timers) or
+/// when the load channel can't express the command (e.g. brightness on `state_l2`).
+pub fn command_to_publish(
+    base: &str,
+    friendly: &str,
+    channel: LoadChannel,
+    cmd: &Command,
+) -> Option<(String, Vec<u8>)> {
+    let state_key = switch_field(channel);
     let body: Value = match cmd {
-        Command::SetSwitch { on, .. } => json!({ "state": if *on { "ON" } else { "OFF" } }),
+        Command::SetSwitch { on, .. } => {
+            let mut o = serde_json::Map::new();
+            o.insert(state_key, json!(if *on { "ON" } else { "OFF" }));
+            Value::Object(o)
+        }
         Command::SetBrightness {
             value, transition, ..
         } => {
+            if channel.is_some() {
+                return None;
+            }
             let mut o = json!({ "brightness": pct_to_level(*value) });
             set_transition(&mut o, *transition);
             o
         }
         Command::ToggleSwitch { .. } => {
-            json!({ "state": "TOGGLE"})
+            let mut o = serde_json::Map::new();
+            o.insert(state_key, json!("TOGGLE"));
+            Value::Object(o)
         }
         Command::SetColor {
             r,
@@ -213,6 +289,9 @@ pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(
             transition,
             ..
         } => {
+            if channel.is_some() {
+                return None;
+            }
             let mut o = json!({ "color": { "r": r, "g": g, "b": b } });
             set_transition(&mut o, *transition);
             o
@@ -220,6 +299,9 @@ pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(
         Command::SetColorTemperature {
             mireds, transition, ..
         } => {
+            if channel.is_some() {
+                return None;
+            }
             let mut o = json!({ "color_temp": mireds });
             set_transition(&mut o, *transition);
             o
@@ -237,7 +319,8 @@ pub fn command_to_publish(base: &str, friendly: &str, cmd: &Command) -> Option<(
 /// unknown devices, sub-topics (`/set`, `/get`), or the bridge are ignored.
 pub fn message_to_events(
     base: &str,
-    by_name: &HashMap<String, DeviceId>,
+    by_name: &HashMap<String, Vec<DeviceId>>,
+    channels: &HashMap<DeviceId, LoadChannel>,
     actions: &HashMap<DeviceId, HashMap<String, ActionId>>,
     msg: &MqttMessage,
 ) -> Vec<Event> {
@@ -248,48 +331,71 @@ pub fn message_to_events(
     if friendly.contains('/') {
         return Vec::new(); // e.g. <friendly>/set echoes, or bridge/... topics
     }
-    let Some(&device) = by_name.get(friendly) else {
+    let Some(device_ids) = by_name.get(friendly) else {
         return Vec::new();
     };
     let Ok(json) = serde_json::from_slice::<Value>(&msg.payload) else {
         return Vec::new();
     };
 
+    device_ids
+        .iter()
+        .flat_map(|&device| {
+            json_to_device_events(
+                device,
+                channels.get(&device).copied().unwrap_or(None),
+                actions,
+                &json,
+            )
+        })
+        .collect()
+}
+
+/// One device's slice of an inbound z2m JSON payload → canonical events.
+fn json_to_device_events(
+    device: DeviceId,
+    channel: LoadChannel,
+    actions: &HashMap<DeviceId, HashMap<String, ActionId>>,
+    json: &Value,
+) -> Vec<Event> {
     let mut events = Vec::new();
-    if let Some(state) = json.get("state").and_then(Value::as_str) {
+    if let Some(state) = json.get(switch_field(channel)).and_then(Value::as_str) {
         events.push(Event::StateReported {
             device,
             state: CapabilityState::Switch(state.eq_ignore_ascii_case("ON")),
         });
     }
-    if let Some(b) = json.get("brightness").and_then(Value::as_u64) {
-        events.push(Event::StateReported {
-            device,
-            state: CapabilityState::Brightness(level_to_pct(b)),
-        });
-    }
-    if let Some(color) = json.get("color") {
-        if let Some((r, g, b)) = parse_z2m_color(color) {
+    // Brightness/color/occupancy/battery live on the root load only.
+    if channel.is_none() {
+        if let Some(b) = json.get("brightness").and_then(Value::as_u64) {
             events.push(Event::StateReported {
                 device,
-                state: CapabilityState::Color { r, g, b },
+                state: CapabilityState::Brightness(level_to_pct(b)),
             });
         }
-    }
-    if let Some(ct) = json.get("color_temp").and_then(Value::as_u64) {
-        events.push(Event::StateReported {
-            device,
-            state: CapabilityState::ColorTemperature(ct.min(u16::MAX as u64) as u16),
-        });
-    }
-    if let Some(occupied) = json.get("occupancy").and_then(Value::as_bool) {
-        events.push(Event::OccupancyChanged { device, occupied });
-    }
-    if let Some(bat) = json.get("battery").and_then(Value::as_u64) {
-        events.push(Event::StateReported {
-            device,
-            state: CapabilityState::Battery(bat.min(100) as u8),
-        });
+        if let Some(color) = json.get("color") {
+            if let Some((r, g, b)) = parse_z2m_color(color) {
+                events.push(Event::StateReported {
+                    device,
+                    state: CapabilityState::Color { r, g, b },
+                });
+            }
+        }
+        if let Some(ct) = json.get("color_temp").and_then(Value::as_u64) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::ColorTemperature(ct.min(u16::MAX as u64) as u16),
+            });
+        }
+        if let Some(occupied) = json.get("occupancy").and_then(Value::as_bool) {
+            events.push(Event::OccupancyChanged { device, occupied });
+        }
+        if let Some(bat) = json.get("battery").and_then(Value::as_u64) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Battery(bat.min(100) as u8),
+            });
+        }
     }
     // A stateless event fires only if the device declared this raw `action`
     // string. Exact match — unknown actions (z2m's empty `""` between presses,
@@ -501,14 +607,22 @@ impl AdapterPlugin for Plugin {
         });
         let (host, port) = parse_mqtt_url(&cfg.url).unwrap_or_default();
 
-        // friendly_name → DeviceId registry (address, or the name as a fallback).
-        let reg: Vec<(DeviceId, String)> = devices
+        // friendly_name + load channel per device (address, or the name as fallback).
+        let reg: Vec<(DeviceId, String, Option<u16>)> = devices
             .iter()
-            .map(|d| (d.id, d.address.clone().unwrap_or_else(|| d.name.clone())))
+            .map(|d| {
+                (
+                    d.id,
+                    d.address.clone().unwrap_or_else(|| d.name.clone()),
+                    d.endpoint,
+                )
+            })
             .collect();
         let topics: Vec<String> = reg
             .iter()
-            .map(|(_, friendly)| format!("{}/{friendly}", cfg.base_topic))
+            .map(|(_, friendly, _)| format!("{}/{friendly}", cfg.base_topic))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect();
         // Per-device (raw action string → ActionId) for inbound translation.
         let mut events = Vec::new();

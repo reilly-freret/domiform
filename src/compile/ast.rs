@@ -111,7 +111,9 @@ pub struct RawDevice {
     pub adapter: String,
     #[serde(default)]
     pub address: Option<String>,
-    /// Matter endpoint (ignored by other protocols). Defaults to 1 when omitted.
+    /// Sub-device endpoint. Matter: application endpoint (default 1). Z-Wave: load
+    /// endpoint on a multi-relay module (default 0). zigbee2mqtt: multi-gang load
+    /// index — 1 = `state_l1`, 2 = `state_l2`, …; omitted = single-load `state`.
     #[serde(default)]
     pub endpoint: Option<u16>,
     #[serde(default)]

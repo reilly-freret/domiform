@@ -86,8 +86,8 @@ pub struct DeviceDef {
     pub address: Option<String>,
     /// Sub-device endpoint, as written in config (`None` when omitted). The
     /// default is protocol-specific, so it's applied where the adapter is built,
-    /// not here: Matter defaults to endpoint 1, Z-Wave to the root endpoint 0.
-    /// Protocols without endpoints (zigbee2mqtt) ignore it.
+    /// not here: Matter defaults to endpoint 1, Z-Wave to the root endpoint 0,
+    /// zigbee2mqtt to the single-load `state` field (use 1/2/… for `state_lN`).
     pub endpoint: Option<u16>,
     pub capabilities: Vec<CapabilityKind>,
     /// Stateless events this device can emit (button presses, knob turns, …).

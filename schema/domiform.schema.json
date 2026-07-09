@@ -107,7 +107,7 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 65535,
-          "description": "Sub-device endpoint of a multi-endpoint node. Optional; only needed to address one load of a multi-load node. Default is protocol-specific: matter → 1, zwavejs → 0 (root). Ignored by zigbee2mqtt."
+          "description": "Sub-device endpoint of a multi-endpoint node. Optional. Matter: application endpoint (default 1). Z-Wave: load endpoint on a multi-relay module (default 0 = root). zigbee2mqtt: multi-gang load index — 1 = state_l1, 2 = state_l2, etc.; omitted = single-load `state`."
         },
         "capabilities": {
           "type": "array",

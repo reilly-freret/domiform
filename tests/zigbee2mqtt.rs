@@ -14,6 +14,10 @@ use domiform::{
 
 const MOTION: DeviceId = DeviceId(0);
 const LIGHT: DeviceId = DeviceId(1);
+const GANG_L1: DeviceId = DeviceId(2);
+const GANG_EVENTS: DeviceId = DeviceId(3);
+
+const GANG: &str = "gang_switch_01";
 
 // MOTION's declared events (local name → raw z2m `action` string), as the
 // compiler would intern them.
@@ -64,8 +68,8 @@ fn adapter(broker: &TestBroker) -> Zigbee2MqttAdapter {
     Zigbee2MqttAdapter::new(
         "zigbee2mqtt",
         [
-            (MOTION, "motion_01".to_string()),
-            (LIGHT, "light_01".to_string()),
+            (MOTION, "motion_01".to_string(), None),
+            (LIGHT, "light_01".to_string(), None),
         ],
         [
             (MOTION, "double".to_string(), DBL),
@@ -84,8 +88,8 @@ fn primes_device_state_with_get_on_first_tick() {
     let mut a = Zigbee2MqttAdapter::new(
         "zigbee2mqtt",
         [
-            (LIGHT, "light_01".to_string()),
-            (MOTION, "motion_01".to_string()),
+            (LIGHT, "light_01".to_string(), None),
+            (MOTION, "motion_01".to_string(), None),
         ],
         std::iter::empty::<(DeviceId, String, ActionId)>(),
         [
@@ -258,6 +262,98 @@ fn outbound_commands_publish_to_set_topic() {
         published[1].1.contains("\"brightness\":127"),
         "got {}",
         published[1].1
+    );
+}
+
+#[test]
+fn multi_channel_switch_commands_and_state() {
+    let broker = TestBroker::default();
+    let mut a = Zigbee2MqttAdapter::new(
+        "zigbee2mqtt",
+        [
+            (GANG_L1, GANG.to_string(), Some(1)),
+            (GANG_EVENTS, GANG.to_string(), None),
+        ],
+        [(GANG_EVENTS, "toggle_l3".to_string(), BOTTOM)],
+        [(GANG_L1, vec![CapabilityKind::Switch])],
+        Box::new(broker.clone()),
+    );
+
+    a.dispatch(
+        &Command::SetSwitch {
+            device: GANG_L1,
+            on: false,
+        },
+        0,
+    );
+    let published = broker.published();
+    assert_eq!(published[0].0, format!("zigbee2mqtt/{GANG}/set"));
+    assert!(
+        published[0].1.contains("\"state_l1\":\"OFF\""),
+        "got {}",
+        published[0].1
+    );
+
+    broker.receive(
+        &format!("zigbee2mqtt/{GANG}"),
+        r#"{"state_l1":"ON","state_l2":"OFF","action":"toggle_l3"}"#,
+    );
+    let events = a.tick(0);
+
+    assert!(events.contains(&Event::StateReported {
+        device: GANG_L1,
+        state: domiform::CapabilityState::Switch(true),
+    }));
+    assert!(events.contains(&Event::Action {
+        device: GANG_EVENTS,
+        action: BOTTOM,
+    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(
+                e,
+                Event::StateReported {
+                    device: GANG_EVENTS,
+                    ..
+                }
+            ))
+            .count(),
+        0,
+        "events-only device must not inherit state_l1"
+    );
+}
+
+#[test]
+fn multi_channel_priming_merges_get_on_shared_topic() {
+    let broker = TestBroker::default();
+    let mut a = Zigbee2MqttAdapter::new(
+        "zigbee2mqtt",
+        [
+            (GANG_L1, GANG.to_string(), Some(1)),
+            (DeviceId(4), GANG.to_string(), Some(2)),
+        ],
+        std::iter::empty::<(DeviceId, String, ActionId)>(),
+        [
+            (GANG_L1, vec![CapabilityKind::Switch]),
+            (DeviceId(4), vec![CapabilityKind::Switch]),
+        ],
+        Box::new(broker.clone()),
+    );
+
+    a.tick(0);
+    let published = broker.published();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].0, format!("zigbee2mqtt/{GANG}/get"));
+    assert!(
+        published[0].1.contains("\"state_l1\":\"\""),
+        "got {}",
+        published[0].1
+    );
+    assert!(
+        published[0].1.contains("\"state_l2\":\"\""),
+        "got {}",
+        published[0].1
     );
 }
 

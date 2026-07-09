@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Example Domiform config: a Sonoff 3-gang wall switch where L1 runs the wired
+# relay and L2/L3 are in detached mode (scene paddles only).
+#
+# One physical z2m device, two domiform devices — same pattern as
+# `zwave_multi_relay.yaml`. `endpoint: 1` selects the `state_l1` load; the
+# events-only entry shares the friendly_name but has no endpoint (it never reads
+# or writes switch state, only `action` notifications).
+#
+# Compile + run against a real zigbee2mqtt broker:
+#     cargo run -- -c examples/z2m_multi_gang.yaml
+
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+
+adapters:
+  home:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+devices:
+  # L1 relay — overhead lights wired through the top paddle.
+  wall_l1:
+    adapter: home
+    address: "sonoff_mains_decora_b"
+    endpoint: 1
+    capabilities: [switch]
+
+  # Detached paddles — L2/L3 emit toggle events but don't own relay state.
+  wall_paddles:
+    adapter: home
+    address: "sonoff_mains_decora_b"
+    events:
+      middle: toggle_l2
+      bottom: toggle_l3
+
+rules:
+  # Bottom scene paddle turns off the L1 relay load.
+  overhead_off:
+    when: { event: wall_paddles.bottom }
+    then:
+      - turn_off: wall_l1

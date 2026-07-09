@@ -1,2 +1,12 @@
 [tools]
 rust = "stable"
+
+[env]
+DOCKER_TAG = "ghcr.io/reilly-freret/domiform:latest"
+DOCKER_PLATFORMS = "linux/arm64,linux/amd64"
+
+[tasks.check]
+run = "cargo fmt && cargo clippy && cargo check && cargo run -- --check examples/*.yaml"
+
+[tasks.build-docker]
+run = "docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_TAG} --push ."
