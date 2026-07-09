@@ -19,6 +19,8 @@
 //!   [`RawConfig`] with `#[serde(default)]`, then teach [`resolve`](super::resolve)
 //!   to walk it and extend [`CompiledConfig`](super::resolve::CompiledConfig).
 //!   Update `schema/domiform.schema.json` so editors and `--check` stay aligned.
+//! * **Top-level `x-*` YAML extensions** (anchor definitions, etc.) — allowed by
+//!   the schema and stripped in [`parse_raw_config`]; no other compiler changes.
 //! * **New rule trigger / condition / command form** — usually no AST change;
 //!   add a dispatch arm in [`lower`](super::lower) for the new single-key map
 //!   and a small typed payload struct here if the value has multiple fields.
@@ -35,7 +37,9 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 /// Top of the file. `deny_unknown_fields` turns a mistyped section name into a
-/// compile error instead of a silent no-op.
+/// compile error instead of a silent no-op. Top-level `x-*` keys are allowed as
+/// YAML extension/anchor definitions (see `parse_raw_config`); they are stripped
+/// before deserialization and ignored by the compiler.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
@@ -55,6 +59,20 @@ pub struct RawConfig {
     pub schedules: BTreeMap<String, RawSchedule>,
     #[serde(default)]
     pub rules: BTreeMap<String, RawRule>,
+}
+
+/// Parse config YAML into [`RawConfig`]. Top-level `x-*` keys (YAML anchor
+/// definitions and similar) are allowed per the schema's `patternProperties` and
+/// stripped after anchor resolution — they never reach `deny_unknown_fields`.
+pub fn parse_raw_config(src: &str) -> Result<RawConfig, serde_yaml::Error> {
+    let mut value: Value = serde_yaml::from_str(src)?;
+    if let Value::Mapping(ref mut map) = value {
+        map.retain(|k, _| match k.as_str() {
+            Some(s) => !s.starts_with("x-"),
+            None => true,
+        });
+    }
+    serde_yaml::from_value(value)
 }
 
 /// One schedule entry. Exactly one field is set: `cron` is the raw 5-field escape

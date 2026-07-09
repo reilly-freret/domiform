@@ -66,7 +66,7 @@ use crate::wake::Waker;
 /// assert!(err.0.len() >= 2);
 /// ```
 pub fn compile_str(src: &str) -> Result<CompiledConfig, CompileErrors> {
-    let raw: ast::RawConfig = match serde_yaml::from_str(src) {
+    let raw: ast::RawConfig = match ast::parse_raw_config(src) {
         Ok(raw) => raw,
         Err(e) => {
             return Err(CompileErrors(vec![Diagnostic::error(

@@ -113,6 +113,45 @@ fn syntax_error_is_a_single_parse_diagnostic() {
 }
 
 #[test]
+fn allows_top_level_x_extension_keys_for_yaml_anchors() {
+    let cfg = compile_str(
+        r#"
+x-ac-off: &ac-off CyEMLCbMASoGzAE3AuABA+ADDwBbIBcJKgY3AioGzAE3AuAhA0AvgDsBzAHgAzcDKgbMAQ==
+
+adapters:
+  z: { type: mock }
+devices:
+  ac: { adapter: z, capabilities: [ir_transmitter] }
+  btn: { adapter: z, events: { press: p } }
+rules:
+  off:
+    when: { event: btn.press }
+    then:
+      - send_ir_code: { device: ac, code: *ac-off }
+"#,
+    )
+    .expect("x-* anchor definitions should compile");
+
+    assert_eq!(cfg.devices.len(), 2);
+    assert_eq!(cfg.rules.len(), 1);
+}
+
+#[test]
+fn rejects_unknown_top_level_keys_even_with_x_extensions() {
+    let errs = compile_str(
+        r#"
+x-ac-off: &ac-off
+  code: abc==
+typo_section: {}
+adapters:
+  z: { type: mock }
+"#,
+    )
+    .expect_err("non-x unknown keys should still fail");
+    assert!(errs.errors().any(|d| d.code == "E_PARSE"));
+}
+
+#[test]
 fn unused_adapter_is_a_warning_not_an_error() {
     let cfg = compile_str(
         r#"
