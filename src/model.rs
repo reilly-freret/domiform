@@ -122,6 +122,21 @@ pub enum Event {
         device: DeviceId,
         state: CapabilityState,
     },
+    /// A consumer *requested* a device change — the canonical inbound path for a
+    /// northbound adapter (a Matter controller writing a cluster attribute, a
+    /// REST call, a web toggle). It is a desired *state*, not a report: the engine
+    /// translates it into the same `Command` a rule would emit (see
+    /// `Engine::command_for_requested_change`) and dispatches it, so a request
+    /// from an app and a physical wall switch are indistinguishable to the engine.
+    /// Unlike `StateReported`, it does **not** fold into the store on its own —
+    /// the device's own echo does that.
+    ///
+    /// Not every `CapabilityState` is writable (a battery level, time-of-day, or
+    /// sun state has no command); such a request has no effect and is dropped.
+    RequestedChange {
+        device: DeviceId,
+        desired: CapabilityState,
+    },
     /// Emitted by the scheduler when a wall-clock schedule comes due.
     TimeReached {
         schedule: ScheduleId,

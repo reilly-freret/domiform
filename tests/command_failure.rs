@@ -106,7 +106,7 @@ fn engine_with(adapter: Box<dyn Adapter>, rec: &SharedRecorder) -> Engine {
         max_attempts: 3,
         base_backoff: 1000,
     });
-    engine.set_observer(Box::new(rec.clone()));
+    engine.add_observer(Box::new(rec.clone()));
     engine.add_rule(turn_on_rule());
     engine
 }

@@ -28,8 +28,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::adapters::{Adapter, DispatchOutcome, SchedulerAdapter};
 use crate::ids::{AdapterIdx, DeviceId, SceneId};
-use crate::model::{Command, Event, Millis, TimerKey};
-use crate::observe::{NoopObserver, Observer};
+use crate::model::{CapabilityState, Command, Event, Millis, TimerKey};
+use crate::observe::Observer;
 use crate::rule::Rule;
 use crate::state::StateStore;
 use crate::CapabilityKind;
@@ -69,6 +69,17 @@ struct PendingRetry {
     attempt: u32,
 }
 
+/// Fan one observer notification out to every registered observer, in order.
+/// A free function taking the slice directly (not `&mut self`) so call sites can
+/// hold a disjoint immutable borrow of another field (`self.rules`, `self.state`)
+/// across the notification — the borrow checker permits `&self.rules` +
+/// `&mut self.observers` but not `&self.rules` + a `&mut self` method call.
+fn notify(observers: &mut [Box<dyn Observer>], f: impl Fn(&mut dyn Observer)) {
+    for obs in observers.iter_mut() {
+        f(obs.as_mut());
+    }
+}
+
 pub struct Engine {
     now: Millis,
     /// Each entry is `(event, causal_depth)`.
@@ -76,9 +87,20 @@ pub struct Engine {
     state: StateStore,
     rules: Vec<Rule>,
     adapters: Vec<Box<dyn Adapter>>,
+    /// Northbound adapters (homekit, …). Held separately from `adapters` because
+    /// they are driven on both paths: `tick`/`next_wake` like an adapter (to
+    /// drain consumer input and schedule wakes) *and* `state_folded` like an
+    /// observer (to mirror engine state outward). They bind no devices, so they
+    /// are never a `dispatch` target and never appear in `device_to_adapter`.
+    northbound: Vec<Box<dyn crate::adapters::NorthboundAdapter>>,
     device_to_adapter: HashMap<DeviceId, AdapterIdx>,
     scenes: HashMap<SceneId, Vec<Command>>,
-    observer: Box<dyn Observer>,
+    /// Every registered observer, notified in registration order. Multiple so a
+    /// trace/logging observer (`StderrObserver`) can coexist with **northbound
+    /// adapters**, which register here to receive `state_folded` — the engine's
+    /// state fan-out seam (see `observe.rs`). Was a single `Box` when observation
+    /// meant only tracing.
+    observers: Vec<Box<dyn Observer>>,
     retry: RetryPolicy,
     retries: HashMap<TimerKey, PendingRetry>,
     retry_counter: u64,
@@ -101,9 +123,10 @@ impl Engine {
             state: StateStore::default(),
             rules: Vec::new(),
             adapters,
+            northbound: Vec::new(),
             device_to_adapter: HashMap::new(),
             scenes: HashMap::new(),
-            observer: Box::new(NoopObserver),
+            observers: Vec::new(),
             retry: RetryPolicy::default(),
             retries: HashMap::new(),
             retry_counter: 0,
@@ -118,6 +141,15 @@ impl Engine {
         self.adapters.len() - 1
     }
 
+    /// Register a northbound adapter. It is ticked (and its `next_wake` honored)
+    /// like an adapter and fed `state_folded` like an observer, but binds no
+    /// devices and is never a dispatch target. See [`NorthboundAdapter`].
+    ///
+    /// [`NorthboundAdapter`]: crate::adapters::NorthboundAdapter
+    pub fn add_northbound(&mut self, adapter: Box<dyn crate::adapters::NorthboundAdapter>) {
+        self.northbound.push(adapter);
+    }
+
     pub fn bind_device(&mut self, device: DeviceId, adapter: AdapterIdx) {
         self.device_to_adapter.insert(device, adapter);
     }
@@ -130,8 +162,12 @@ impl Engine {
         self.scenes.insert(scene, commands);
     }
 
-    pub fn set_observer(&mut self, observer: Box<dyn Observer>) {
-        self.observer = observer;
+    /// Register an observer. Multiple may coexist and are notified in
+    /// registration order: a host's trace/logging observer plus any northbound
+    /// adapters that observe `state_folded` to mirror engine state (see
+    /// `observe.rs`). Replaces the old single-observer `set_observer`.
+    pub fn add_observer(&mut self, observer: Box<dyn Observer>) {
+        self.observers.push(observer);
     }
 
     pub fn set_retry_policy(&mut self, policy: RetryPolicy) {
@@ -161,10 +197,9 @@ impl Engine {
     /// the next due event instead of polling. `None` means no adapter has any
     /// scheduled work, so the host should wait solely on external I/O.
     pub fn next_wake_delay(&self) -> Option<Millis> {
-        self.adapters
-            .iter()
-            .filter_map(|a| a.next_wake(self.now))
-            .min()
+        let adapters = self.adapters.iter().filter_map(|a| a.next_wake(self.now));
+        let northbound = self.northbound.iter().filter_map(|a| a.next_wake(self.now));
+        adapters.chain(northbound).min()
     }
 
     /// Boot phase: tick every adapter once so initial state (notably the clock's
@@ -195,6 +230,12 @@ impl Engine {
         for adapter in &mut self.adapters {
             produced.extend(adapter.tick(self.now));
         }
+        // Northbound adapters tick too: this is how consumer input (a Home-app
+        // tap queued on the HAP thread) drains into inbound `Event`s — the same
+        // pull-after-`Waker` path a southbound device report takes.
+        for adapter in &mut self.northbound {
+            produced.extend(adapter.tick(self.now));
+        }
         for ev in produced {
             self.queue.push_back((ev, 0));
         }
@@ -204,11 +245,11 @@ impl Engine {
         while let Some((ev, depth)) = self.queue.pop_front() {
             // Backstop: refuse to follow a cascade past the configured depth.
             if depth > self.max_cascade_depth {
-                self.observer.cascade_dropped(&ev, depth);
+                notify(&mut self.observers, |o| o.cascade_dropped(&ev, depth));
                 continue;
             }
 
-            self.observer.event_received(&ev, depth);
+            notify(&mut self.observers, |o| o.event_received(&ev, depth));
 
             // Intercept internal retry timers before rule matching: they re-issue
             // a command rather than acting as a user-visible trigger. A retry is
@@ -218,6 +259,21 @@ impl Engine {
                     self.dispatch_at(pending.command, pending.attempt, 0);
                     continue;
                 }
+            }
+
+            // A consumer-requested change (northbound inbound: a Matter controller
+            // attribute write, a REST call, a web toggle) becomes the same command
+            // a rule would emit and is dispatched one causal hop from the request.
+            // It is deliberately *not* folded into the store and *not* run through
+            // rule matching — it is an intent to act, not a report of reality, and
+            // reality arrives later as the device's own echo. A non-writable
+            // desired state (battery, time) yields no command and is a harmless
+            // no-op.
+            if let Event::RequestedChange { device, desired } = &ev {
+                if let Some(cmd) = Self::command_for_requested_change(*device, desired) {
+                    self.dispatch_at(cmd, 1, depth);
+                }
+                continue;
             }
 
             self.fold_state(&ev);
@@ -234,7 +290,9 @@ impl Engine {
                 }
                 let truth = rule.condition.eval(&self.state);
                 let fired = truth.is_true();
-                self.observer.rule_considered(rule.id, truth, fired);
+                notify(&mut self.observers, |o| {
+                    o.rule_considered(rule.id, truth, fired)
+                });
                 if fired {
                     commands.extend(rule.commands.iter().cloned());
                 }
@@ -245,19 +303,32 @@ impl Engine {
         }
     }
 
-    /// Fold device feedback / sensor reports into the disposable state store.
+    /// Fold device feedback / sensor reports into the disposable state store, and
+    /// fan the change to observers *and* northbound adapters (the state mirror).
     fn fold_state(&mut self, ev: &Event) {
         match ev {
             Event::StateReported { device, state } => {
-                self.observer.state_folded(*device, state);
+                self.fan_state_folded(*device, state);
                 self.state.set(*device, state.clone());
             }
             Event::OccupancyChanged { device, occupied } => {
-                let state = crate::model::CapabilityState::Occupancy(*occupied);
-                self.observer.state_folded(*device, &state);
+                let state = CapabilityState::Occupancy(*occupied);
+                self.fan_state_folded(*device, &state);
                 self.state.set(*device, state);
             }
             _ => {}
+        }
+    }
+
+    /// Deliver a folded state change to every observer *and* every northbound
+    /// adapter. Northbound adapters are `Observer`s too, but live in their own
+    /// list (they also tick); this is the single seam that keeps their outward
+    /// mirror in sync with the store. Kept separate from `notify` so the two
+    /// disjoint field borrows (`observers`, `northbound`) are explicit.
+    fn fan_state_folded(&mut self, device: DeviceId, state: &CapabilityState) {
+        notify(&mut self.observers, |o| o.state_folded(device, state));
+        for nb in &mut self.northbound {
+            nb.state_folded(device, state);
         }
     }
 
@@ -268,14 +339,14 @@ impl Engine {
         // and the adapter both see the concrete `SetSwitch` (see `resolve_toggle`).
         let cmd = self.resolve_implicit_state_command(cmd);
 
-        self.observer.command_dispatched(&cmd, depth);
+        notify(&mut self.observers, |o| o.command_dispatched(&cmd, depth));
 
         // Scenes have no special runtime semantics: expand to fresh commands at
         // the same causal depth (one hop from the activating event).
         if let Command::ActivateScene { scene } = &cmd {
             let scene = *scene;
             if let Some(cmds) = self.scenes.get(&scene).cloned() {
-                self.observer.scene_expanded(scene, cmds.len());
+                notify(&mut self.observers, |o| o.scene_expanded(scene, cmds.len()));
                 for c in cmds {
                     self.dispatch_at(c, 1, depth);
                 }
@@ -311,6 +382,43 @@ impl Engine {
                     DispatchOutcome::Permanent("no adapter bound for target device".into());
                 self.handle_outcome(outcome, cmd, attempt, depth);
             }
+        }
+    }
+
+    /// Translate a consumer-requested *desired state* into the `Command` that
+    /// achieves it — the canonical "northbound intent → action" mapping, kept in
+    /// one place so every northbound adapter (HomeKit, REST, web) speaks pure
+    /// state and never constructs commands itself. Requests carry no transition
+    /// (a tap is instantaneous intent), so brightness/color use `None`.
+    ///
+    /// Returns `None` for capability states that are *reports only* and have no
+    /// corresponding write command (`Occupancy`, `Battery`, `TimeOfDay`,
+    /// `SunUp`) — requesting those is a harmless no-op rather than an error.
+    fn command_for_requested_change(
+        device: DeviceId,
+        desired: &CapabilityState,
+    ) -> Option<Command> {
+        use CapabilityState as S;
+        match *desired {
+            S::Switch(on) => Some(Command::SetSwitch { device, on }),
+            S::Brightness(value) => Some(Command::SetBrightness {
+                device,
+                value,
+                transition: None,
+            }),
+            S::Color { r, g, b } => Some(Command::SetColor {
+                device,
+                r,
+                g,
+                b,
+                transition: None,
+            }),
+            S::ColorTemperature(mireds) => Some(Command::SetColorTemperature {
+                device,
+                mireds,
+                transition: None,
+            }),
+            S::Occupancy(_) | S::Battery(_) | S::TimeOfDay(_) | S::SunUp(_) => None,
         }
     }
 
@@ -364,7 +472,9 @@ impl Engine {
         match outcome {
             DispatchOutcome::Ok(evs) => self.enqueue_all(evs, depth + 1),
             DispatchOutcome::Transient(reason) => {
-                self.observer.dispatch_failed(&cmd, &reason, true, attempt);
+                notify(&mut self.observers, |o| {
+                    o.dispatch_failed(&cmd, &reason, true, attempt)
+                });
                 if attempt < self.retry.max_attempts {
                     self.schedule_retry(cmd, attempt);
                 } else {
@@ -372,7 +482,9 @@ impl Engine {
                 }
             }
             DispatchOutcome::Permanent(reason) => {
-                self.observer.dispatch_failed(&cmd, &reason, false, attempt);
+                notify(&mut self.observers, |o| {
+                    o.dispatch_failed(&cmd, &reason, false, attempt)
+                });
                 self.give_up(cmd, reason, attempt, depth);
             }
         }
@@ -384,7 +496,9 @@ impl Engine {
         self.retry_counter += 1;
         let key = TimerKey(format!("{RETRY_KEY_PREFIX}{}", self.retry_counter));
 
-        self.observer.retry_scheduled(&cmd, next_attempt, delay);
+        notify(&mut self.observers, |o| {
+            o.retry_scheduled(&cmd, next_attempt, delay)
+        });
         self.retries.insert(
             key.clone(),
             PendingRetry {
@@ -398,7 +512,9 @@ impl Engine {
     }
 
     fn give_up(&mut self, cmd: Command, reason: String, attempts: u32, depth: u32) {
-        self.observer.command_failed(&cmd, &reason, attempts);
+        notify(&mut self.observers, |o| {
+            o.command_failed(&cmd, &reason, attempts)
+        });
         self.enqueue(
             Event::CommandFailed {
                 command: cmd,

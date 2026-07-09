@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Northbound example: domiform exposes its devices as a native Matter **bridge** on
+# the LAN, so Apple Home / Google Home / Alexa can control them — whatever each
+# device's underlying protocol. The `home` adapter binds no devices of its own; it
+# projects devices declared under the southbound `z2m` adapter, so the YAML stays
+# the single source of truth.
+#
+# Each exposed device becomes a bridged accessory under its domiform name (via the
+# bridged endpoint's node_label). Run it, then scan the pairing QR printed to the
+# log into your Home app.
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+  # Matter commissioning/fabric state (runtime data, not config) lives here, so a
+  # paired controller survives restarts. Defaults to the config file's directory.
+  runtime_storage_path: ./runtime
+
+adapters:
+  z2m:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+  home:
+    type: matter_device
+    # Expose any number of devices (or `all`). Each becomes a bridged accessory.
+    expose: [living_room_lamp, kitchen_light]
+    # Optional: force the LAN interface used for Matter mDNS discovery. Auto-
+    # selection skips VPN/tunnel interfaces (Tailscale utun*, WireGuard), but set
+    # this if the device isn't discoverable — e.g. `en0` for macOS Wi-Fi.
+    # interface: en0
+
+devices:
+  living_room_lamp:
+    adapter: z2m
+    address: living_room_rgb
+    capabilities: [switch, brightness]
+
+  kitchen_light:
+    adapter: z2m
+    address: kitchen_dimmer
+    capabilities: [switch, brightness]

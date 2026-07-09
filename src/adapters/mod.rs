@@ -27,7 +27,9 @@ use crate::model::{Command, Event, Millis};
 
 mod clock;
 pub mod matter;
+pub mod matter_device;
 mod mock;
+pub mod mock_northbound;
 mod plugin;
 mod scheduler;
 pub mod zigbee2mqtt;
@@ -35,8 +37,14 @@ pub mod zwavejs;
 
 pub use clock::ClockAdapter;
 pub use matter::{AttrReport, ClusterCommand, EndpointId, MatterAdapter, MatterController, NodeId};
+pub use matter_device::{
+    capability_is_exposable, default_state_file, device_type_for, ExposedDevice, InMemoryMatter,
+    InMemoryMatterState, MatterDeviceAdapter, MatterDeviceType, MatterTransport,
+};
 pub use mock::MockDeviceAdapter;
-pub use plugin::{config_of, AdapterPlugin};
+pub use mock_northbound::{MockNorthbound, MockNorthboundState};
+pub use plugin::{config_of, AdapterPlugin, ExposeSpec, NorthboundCtx, Polarity};
+// `NorthboundAdapter` is defined below (needs `Adapter` + `Observer` in scope).
 pub use scheduler::SchedulerAdapter;
 pub use zigbee2mqtt::{MqttMessage, MqttTransport, Zigbee2MqttAdapter};
 pub use zwavejs::{DeviceKind, SetValue, ValueUpdate, ZwaveAdapter, ZwaveClient};
@@ -49,7 +57,9 @@ static PLUGINS: &[&dyn AdapterPlugin] = &[
     &zigbee2mqtt::PLUGIN,
     &matter::PLUGIN,
     &zwavejs::PLUGIN,
+    &matter_device::PLUGIN,
     &mock::PLUGIN,
+    &mock_northbound::PLUGIN,
 ];
 
 /// The registered protocol adapters. Append a new adapter's `PLUGIN` to this
@@ -95,6 +105,21 @@ impl DispatchOutcome {
         DispatchOutcome::Ok(Vec::new())
     }
 }
+
+/// A northbound adapter (homekit, and later REST/web/voice): it both *observes*
+/// engine state (to mirror it to a consumer) and behaves as an *adapter* (its
+/// `tick` drains consumer input — a Home-app tap — into inbound `Event`s, and
+/// `next_wake` participates in the host's sleep). It binds no devices, so its
+/// `dispatch` is never called; the `Adapter` bound is for `tick`/`next_wake`.
+///
+/// The engine holds these in a dedicated list so it can both tick them *and* fan
+/// `state_folded` to them, without every ordinary observer paying for a `tick`.
+pub trait NorthboundAdapter: Adapter + crate::observe::Observer {}
+
+/// Any type that is both an [`Adapter`] and an [`Observer`] is a
+/// [`NorthboundAdapter`] — the blanket impl means an adapter author just
+/// implements the two facets and gets this for free.
+impl<T: Adapter + crate::observe::Observer> NorthboundAdapter for T {}
 
 pub trait Adapter {
     /// Translate a command into protocol action. Real network adapters will

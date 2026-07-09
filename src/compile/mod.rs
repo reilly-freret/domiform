@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::adapters::ClockAdapter;
 use crate::engine::Engine;
+use crate::ids::AdapterIdx;
 use crate::wake::Waker;
 
 /// Parse and resolve config text into a [`CompiledConfig`], or return every
@@ -122,6 +123,18 @@ pub fn build_engine_with_waker(cfg: &CompiledConfig, waker: Option<Waker>) -> En
     build_engine_at(cfg, waker, now_unix_ms())
 }
 
+/// Like [`build_engine_with_waker`], but with the config file's directory used to
+/// resolve `system.runtime_storage_path`. This is what the real-time host uses so
+/// runtime state (the `matter_device` fabric store, …) lands next to the config,
+/// stable across working directories. Seeds the clock from the real wall clock.
+pub fn build_engine_with_waker_in(
+    cfg: &CompiledConfig,
+    waker: Option<Waker>,
+    config_dir: &std::path::Path,
+) -> Engine {
+    build_engine_full(cfg, waker, now_unix_ms(), config_dir)
+}
+
 /// The current Unix time in ms, or `0` if the clock is somehow before the epoch.
 fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -136,6 +149,23 @@ fn now_unix_ms() -> i64 {
 /// starts at 0 and the wall instant is `boot_epoch_ms + engine_now`, so a test
 /// that passes a fixed epoch and drives `advance` by hand is fully replayable.
 pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms: i64) -> Engine {
+    // No config path known (tests, one-shot tools): base the runtime storage dir on
+    // the process cwd. A real host uses `build_engine_full` to supply the config's
+    // own directory, which is the stable default.
+    build_engine_full(cfg, waker, boot_epoch_ms, std::path::Path::new("."))
+}
+
+/// Like [`build_engine_at`], but with the directory used to resolve a relative or
+/// defaulted `system.runtime_storage_path` — the config file's own directory. The
+/// host (`main.rs`) passes this so runtime state (e.g. the `matter_device` fabric
+/// store) lands next to the config regardless of the process's working directory.
+pub fn build_engine_full(
+    cfg: &CompiledConfig,
+    waker: Option<Waker>,
+    boot_epoch_ms: i64,
+    config_dir: &std::path::Path,
+) -> Engine {
+    let runtime_dir = cfg.system.runtime_storage_dir(config_dir);
     let mut engine = Engine::new();
 
     // Group devices by their config adapter so each adapter can be built with
@@ -145,19 +175,45 @@ pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms
         by_adapter[device.adapter].push(device);
     }
 
-    // One runtime adapter slot per config adapter, in config order. (Slot 0 in
-    // the engine is the scheduler, so these land at 1..=N — hence the mapping.)
+    // One runtime slot per config adapter, in config order. (Slot 0 in the engine
+    // is the scheduler, so southbound adapters land at 1..=N.) Northbound adapters
+    // aren't dispatch targets and get no slot: their entry is a sentinel that no
+    // device ever looks up (nothing binds to a northbound adapter — see below).
+    const NO_SLOT: AdapterIdx = usize::MAX;
     let mut runtime_idx = Vec::with_capacity(cfg.adapters.len());
     for (i, adapter) in cfg.adapters.iter().enumerate() {
         // Compilation fails on unknown adapter types, so `plugin` is always
         // `Some` in a successfully built config.
-        let built = adapter
+        let plugin = adapter
             .plugin
-            .expect("compiled adapter has a registered plugin")
-            .build(&adapter.config, &by_adapter[i], waker.clone());
-        runtime_idx.push(engine.add_adapter(built));
+            .expect("compiled adapter has a registered plugin");
+        match plugin.polarity() {
+            crate::adapters::Polarity::Southbound => {
+                let built = plugin.build(&adapter.config, &by_adapter[i], waker.clone());
+                runtime_idx.push(engine.add_adapter(built));
+            }
+            crate::adapters::Polarity::Northbound => {
+                // Resolve the devices this adapter exposes (declared under other
+                // adapters; validated in `resolve`) and build it against those.
+                let exposed = exposed_devices(cfg, &adapter.config, plugin);
+                let ctx = crate::adapters::NorthboundCtx {
+                    adapter_name: &adapter.name,
+                    runtime_storage_dir: &runtime_dir,
+                };
+                if let Some(nb) =
+                    plugin.build_northbound(&adapter.config, &exposed, waker.clone(), &ctx)
+                {
+                    engine.add_northbound(nb);
+                }
+                // No dispatch slot: nothing routes commands to a northbound adapter.
+                runtime_idx.push(NO_SLOT);
+            }
+        }
     }
     for device in &cfg.devices {
+        // A device never binds to a northbound adapter (the resolver rejects that),
+        // so its slot is always a real southbound one.
+        debug_assert_ne!(runtime_idx[device.adapter], NO_SLOT);
         engine.bind_device(device.id, runtime_idx[device.adapter]);
     }
 
@@ -185,6 +241,28 @@ pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms
     }
 
     engine
+}
+
+/// Resolve a northbound adapter's `expose` spec into the concrete `DeviceDef`s it
+/// mirrors. `resolve` has already validated that every named device exists, so an
+/// unknown name here is impossible and simply contributes nothing (mirroring how
+/// the rest of the builder treats values the resolver already checked). A plugin
+/// that returns no [`ExposeSpec`](crate::adapters::ExposeSpec) exposes nothing.
+fn exposed_devices<'a>(
+    cfg: &'a CompiledConfig,
+    config: &serde_yaml::Value,
+    plugin: &'static dyn crate::adapters::AdapterPlugin,
+) -> Vec<&'a DeviceDef> {
+    use crate::adapters::ExposeSpec;
+    match plugin.expose_spec(config) {
+        Some(ExposeSpec::All) => cfg.devices.iter().collect(),
+        Some(ExposeSpec::Named(names)) => cfg
+            .devices
+            .iter()
+            .filter(|d| names.iter().any(|n| n == &d.name))
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Parse each compiled schedule's cron string back into a `croner::Cron` for the

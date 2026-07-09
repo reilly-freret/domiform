@@ -5,5 +5,8 @@
 # build artifacts
 target/
 
+# runtime artifacts
+runtime/
+
 # system files ew
 .DS_Store
