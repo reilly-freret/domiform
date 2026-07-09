@@ -130,10 +130,32 @@ rules:
       - send_ir_code: { device: ac, code: *ac-off }
 "#,
     )
-    .expect("x-* anchor definitions should compile");
+    .expect("scalar x-* anchors should compile");
 
     assert_eq!(cfg.devices.len(), 2);
     assert_eq!(cfg.rules.len(), 1);
+}
+
+#[test]
+fn expands_yaml_merge_keys_for_mapping_anchors() {
+    let cfg = compile_str(
+        r#"
+x-ac-off: &ac-off
+  code: CyEMLCbMASoGzAE3AuABA+ADDwBbIBcJKgY3AioGzAE3AuAhA0AvgDsBzAHgAzcDKgbMAQ==
+
+adapters:
+  z: { type: mock }
+devices:
+  ac: { adapter: z, capabilities: [ir_transmitter] }
+scenes:
+  all_off:
+    - send_ir_code: { device: ac, <<: *ac-off }
+"#,
+    )
+    .expect("<< merge with mapping anchors should compile");
+
+    assert_eq!(cfg.scenes.len(), 1);
+    assert_eq!(cfg.scenes[0].commands.len(), 1);
 }
 
 #[test]

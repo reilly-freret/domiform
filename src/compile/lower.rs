@@ -3,7 +3,9 @@
 //! Each node is the terse single-key map (`{ occupancy: motion }`,
 //! `{ set_brightness: { device, value } }`). We dispatch on the key by hand —
 //! serde's externally-tagged enums can't read this form from YAML — and use
-//! `serde_yaml::from_value` only for the multi-field payloads.
+//! `serde_yaml::from_value` only for the multi-field payloads. YAML `<<` merge
+//! keys are expanded via [`Value::apply_merge`](serde_yaml::Value::apply_merge)
+//! before deserialization so mapping anchors can supply shared fields.
 //!
 //! Every device name resolves to a `DeviceId`, every scene to a `SceneId`, every
 //! capability reference is checked against what the device declares, and
@@ -92,7 +94,11 @@ impl Lowerer<'_> {
         }
     }
 
-    fn payload<T: DeserializeOwned>(&mut self, v: Value, node: &str, at: &str) -> Option<T> {
+    fn payload<T: DeserializeOwned>(&mut self, mut v: Value, node: &str, at: &str) -> Option<T> {
+        if let Err(e) = v.apply_merge() {
+            self.error("E_BAD_NODE", format!("invalid '{node}': {e}"), at);
+            return None;
+        }
         match serde_yaml::from_value::<T>(v) {
             Ok(t) => Some(t),
             Err(e) => {
