@@ -5,6 +5,7 @@
   "description": "Declarative smart-home config. Mirrors the compiler's accepted shape so editors can flag bad keys/values before `domiform` ever runs. See docs/STATUS.md for semantics.",
   "type": "object",
   "additionalProperties": false,
+  "patternProperties": {"^x-": {}},
   "properties": {
     "system": { "$ref": "#/$defs/system" },
     "adapters": {
