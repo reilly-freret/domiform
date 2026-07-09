@@ -248,10 +248,10 @@ impl Lowerer<'_> {
                 kind: CapabilityKind::SunUp,
                 value: self.as_flag(&payload, "sun_up", at)?,
             },
-            "switch_is" => {
-                let s: RawSwitchIs = self.payload(payload, "switch_is", at)?;
+            "switch" => {
+                let s: RawSwitchIs = self.payload(payload, "switch", at)?;
                 let device = self.resolve_device(&s.device, at)?;
-                self.require_cap(device, &s.device, CapabilityKind::Switch, "switch_is", at);
+                self.require_cap(device, &s.device, CapabilityKind::Switch, "switch", at);
                 Condition::BoolEquals {
                     device,
                     kind: CapabilityKind::Switch,

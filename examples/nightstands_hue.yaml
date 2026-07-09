@@ -70,7 +70,7 @@ rules:
     when:
       event: kennedy_dimmer.off
     if:
-      switch_is: 
+      switch: 
         device: kennedy_nightstand
         is_on: true
     then:
@@ -81,7 +81,7 @@ rules:
     when:
       event: kennedy_dimmer.off
     if:
-      switch_is: 
+      switch: 
         device: kennedy_nightstand
         is_on: false
     then:
@@ -113,7 +113,7 @@ rules:
     when:
       event: reilly_dimmer.off
     if:
-      switch_is: 
+      switch: 
         device: reilly_nightstand
         is_on: true
     then:
@@ -124,7 +124,7 @@ rules:
     when:
       event: reilly_dimmer.off
     if:
-      switch_is:
+      switch:
         device: reilly_nightstand
         is_on: false
     then:
@@ -139,7 +139,7 @@ rules:
     when:
       event: bedroom_wall_switch.middle
     if:
-      switch_is: 
+      switch: 
         device: kennedy_nightstand
         is_on: true
     then:
@@ -150,7 +150,7 @@ rules:
     when:
       event: bedroom_wall_switch.middle
     if:
-      switch_is: 
+      switch: 
         device: kennedy_nightstand
         is_on: false
     then:

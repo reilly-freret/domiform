@@ -31,13 +31,13 @@ devices:
 rules:
   nightstands_on:
     when: { event: moes_button_grid.bottom_right_single }
-    if: { switch_is: { device: nightstands_left, is_on: false } }
+    if: { switch: { device: nightstands_left, is_on: false } }
     then:
       - activate_scene: nightstands_on
 
   nightstands_off:
     when: { event: moes_button_grid.bottom_right_single }
-    if: { switch_is: { device: nightstands_left, is_on: true } }
+    if: { switch: { device: nightstands_left, is_on: true } }
     then:
       - activate_scene: nightstands_off
 

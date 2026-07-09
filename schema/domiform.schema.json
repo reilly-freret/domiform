@@ -172,7 +172,7 @@
         "any": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
         "not": { "$ref": "#/$defs/condition" },
         "sun_up": { "type": "boolean" },
-        "switch_is": {
+        "switch": {
           "type": "object",
           "additionalProperties": false,
           "required": ["device", "is_on"],

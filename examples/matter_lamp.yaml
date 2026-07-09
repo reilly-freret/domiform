@@ -55,12 +55,12 @@ scenes:
 rules: 
   lr_floor_lamp_on:
     when: { event: remote.single_press_1 }
-    if: { switch_is: { device: lr_floor_lamp_branch, is_on: false } }
+    if: { switch: { device: lr_floor_lamp_branch, is_on: false } }
     then:
       - activate_scene: lr_floor_lamp_on
 
   lr_floor_lamp_off:
     when: { event: remote.single_press_1 }
-    if: { switch_is: { device: lr_floor_lamp_branch, is_on: true } }
+    if: { switch: { device: lr_floor_lamp_branch, is_on: true } }
     then:
       - activate_scene: lr_floor_lamp_off

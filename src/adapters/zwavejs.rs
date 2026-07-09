@@ -374,7 +374,7 @@ pub fn update_to_events(
             state: CapabilityState::Switch(on),
         }),
         // A dimmer's level implies both brightness *and* on/off (level 0 = off),
-        // so a `switch_is` condition works on a dimmer that has no Binary Switch.
+        // so a `switch` condition works on a dimmer that has no Binary Switch.
         (CC_MULTILEVEL_SWITCH, "currentValue") => {
             return u
                 .value
