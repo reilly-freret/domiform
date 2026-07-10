@@ -208,6 +208,32 @@ impl Engine {
     pub fn start(&mut self) {
         self.tick_adapters();
         self.drain();
+        self.sync_northbound_startup_state();
+    }
+
+    /// Replay the current state store into every northbound adapter, so a freshly
+    /// built projection (a Matter node's attribute cells) reflects engine truth at
+    /// boot instead of protocol defaults. Without this, a controller reading an
+    /// endpoint immediately after pairing sees the node's defaults (off / full
+    /// brightness) until the next fold arrives. Idempotent: `state_folded` on a
+    /// northbound adapter just overwrites its mirror.
+    ///
+    /// Only northbound adapters are synced — ordinary observers already witnessed
+    /// each fold as it happened and a replay would double-report to them.
+    fn sync_northbound_startup_state(&mut self) {
+        if self.northbound.is_empty() {
+            return;
+        }
+        let snapshot: Vec<(DeviceId, CapabilityState)> = self
+            .state
+            .iter()
+            .map(|(device, state)| (device, state.clone()))
+            .collect();
+        for (device, state) in &snapshot {
+            for nb in &mut self.northbound {
+                nb.state_folded(*device, state);
+            }
+        }
     }
 
     /// Inject an inbound event (as an adapter would) and run to quiescence.

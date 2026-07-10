@@ -43,16 +43,37 @@ fn occupancy_only_is_a_sensor() {
 }
 
 #[test]
-fn only_switch_and_brightness_are_exposable() {
+fn color_or_color_temp_makes_an_extended_color_light() {
+    assert_eq!(
+        device_type_for(&[CapabilityKind::Switch, CapabilityKind::Color]),
+        MatterDeviceType::ExtendedColorLight
+    );
+    assert_eq!(
+        device_type_for(&[
+            CapabilityKind::Switch,
+            CapabilityKind::Brightness,
+            CapabilityKind::ColorTemperature,
+        ]),
+        MatterDeviceType::ExtendedColorLight
+    );
+    // Color subsumes dimmable/on-off, so it wins the classification.
+    assert_eq!(
+        device_type_for(&[CapabilityKind::Color]),
+        MatterDeviceType::ExtendedColorLight
+    );
+}
+
+#[test]
+fn switch_brightness_and_color_are_exposable() {
     // Wired in the live node today.
     assert!(capability_is_exposable(CapabilityKind::Switch));
     assert!(capability_is_exposable(CapabilityKind::Brightness));
+    assert!(capability_is_exposable(CapabilityKind::Color));
+    assert!(capability_is_exposable(CapabilityKind::ColorTemperature));
     // Declared in the model but not yet projected (would advertise the wrong
-    // device type if admitted without cluster handlers).
+    // device type without their sensor/power clusters).
     assert!(!capability_is_exposable(CapabilityKind::Occupancy));
     assert!(!capability_is_exposable(CapabilityKind::Battery));
-    assert!(!capability_is_exposable(CapabilityKind::Color));
-    assert!(!capability_is_exposable(CapabilityKind::ColorTemperature));
     // Engine-internal / write-only — never projected.
     assert!(!capability_is_exposable(CapabilityKind::TimeOfDay));
     assert!(!capability_is_exposable(CapabilityKind::SunUp));
@@ -126,6 +147,73 @@ fn publish_filters_unexposable_capabilities() {
     assert_eq!(
         transport.published(),
         vec![(LIGHT, CapabilityState::Brightness(50))]
+    );
+}
+
+#[test]
+fn color_and_color_temp_are_published() {
+    let transport = InMemoryMatter::new();
+    let mut adapter = MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Color, CapabilityKind::ColorTemperature],
+        }],
+        Box::new(transport.clone()),
+    );
+
+    adapter.state_folded(LIGHT, &CapabilityState::Color { r: 255, g: 0, b: 0 });
+    adapter.state_folded(LIGHT, &CapabilityState::ColorTemperature(250));
+    // Occupancy stays filtered out.
+    adapter.state_folded(LIGHT, &CapabilityState::Occupancy(true));
+
+    assert_eq!(
+        transport.published(),
+        vec![
+            (LIGHT, CapabilityState::Color { r: 255, g: 0, b: 0 }),
+            (LIGHT, CapabilityState::ColorTemperature(250)),
+        ]
+    );
+}
+
+#[test]
+fn a_controller_color_write_becomes_a_requested_change_on_tick() {
+    let transport = InMemoryMatter::new();
+    transport.queue_inbound(
+        LIGHT,
+        CapabilityState::Color {
+            r: 0,
+            g: 128,
+            b: 255,
+        },
+    );
+    transport.queue_inbound(LIGHT, CapabilityState::ColorTemperature(300));
+
+    let mut adapter = MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Color, CapabilityKind::ColorTemperature],
+        }],
+        Box::new(transport),
+    );
+
+    assert_eq!(
+        adapter.tick(0),
+        vec![
+            Event::RequestedChange {
+                device: LIGHT,
+                desired: CapabilityState::Color {
+                    r: 0,
+                    g: 128,
+                    b: 255
+                },
+            },
+            Event::RequestedChange {
+                device: LIGHT,
+                desired: CapabilityState::ColorTemperature(300),
+            },
+        ]
     );
 }
 
@@ -251,6 +339,46 @@ devices:
 
     let mut engine = build_engine(&cfg);
     engine.start(); // must not panic (spawns the live Matter node thread)
+}
+
+#[test]
+fn color_device_config_compiles_and_builds() {
+    let cfg = compile_str(
+        r#"
+adapters:
+  z: { type: mock }
+  home: { type: matter_device, expose: all }
+devices:
+  bulb: { adapter: z, capabilities: [switch, brightness, color, color_temperature] }
+"#,
+    )
+    .expect("valid config");
+
+    let mut engine = build_engine(&cfg);
+    engine.start(); // must not panic (builds an extended-color endpoint)
+}
+
+#[test]
+fn two_matter_device_adapters_is_a_compile_error() {
+    let err = compile_str(
+        r#"
+adapters:
+  z: { type: mock }
+  home: { type: matter_device, expose: all }
+  guest: { type: matter_device, expose: all }
+devices:
+  lamp: { adapter: z, capabilities: [switch] }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.0
+            .iter()
+            .any(|d| d.to_string().contains("E_MULTIPLE_MATTER_DEVICE")),
+        "expected E_MULTIPLE_MATTER_DEVICE, got {:?}",
+        err.0
+    );
 }
 
 // --- runtime storage path resolution -----------------------------------------

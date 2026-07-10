@@ -76,9 +76,10 @@ registers the emulators if they aren't already present.)
 - [x] Z-Wave adapter
 - [x] Northbound Matter bridge (`matter_device`): expose domiform devices as a
       native Matter node so Apple Home / Google Home / Alexa can control them.
-      Switch + Brightness are live; Occupancy / Battery / Color are not yet
-      projected (admitting them without cluster handlers would advertise the
-      wrong device type).
+      Switch, Brightness, Color and ColorTemperature are live (a color device
+      appears as an extended color light); Occupancy / Battery are not yet
+      projected (admitting them without their sensor/power clusters would
+      advertise the wrong device type).
 - [ ] Documentation
 - [ ] Published binaries
 - [x] Dockerfile

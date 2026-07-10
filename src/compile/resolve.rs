@@ -409,6 +409,33 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
         }
     }
 
+    // --- single-node limit: at most one `matter_device` adapter -------------
+    // Each live `matter_device` node binds the fixed Matter UDP port (5540) and
+    // shares the mDNS port; two nodes in one process collide at runtime. The build
+    // path already supports N northbound adapters structurally, but the Matter
+    // transport does not yet assign per-node ports, so reject a second
+    // `matter_device` at compile time rather than fail obscurely on boot. (Supporting
+    // multiple bridges — for several distinct Home accessories — is deferred work.)
+    let matter_device_adapters: Vec<&str> = adapters
+        .iter()
+        .filter(|a| a.plugin.map(|p| p.type_tag()) == Some("matter_device"))
+        .map(|a| a.name.as_str())
+        .collect();
+    if matter_device_adapters.len() > 1 {
+        let names = matter_device_adapters.join(", ");
+        diags.push(
+            Diagnostic::error(
+                "E_MULTIPLE_MATTER_DEVICE",
+                format!(
+                    "at most one `matter_device` adapter is supported (a second live Matter node \
+                     would collide on the Matter UDP port); found {}: {names}",
+                    matter_device_adapters.len()
+                ),
+            )
+            .at(format!("adapter '{}'", matter_device_adapters[1])),
+        );
+    }
+
     // --- northbound `expose` validation -------------------------------------
     // A northbound adapter names the devices it exposes (declared under other
     // adapters). Check each name resolves; an empty exposure is a warning (the

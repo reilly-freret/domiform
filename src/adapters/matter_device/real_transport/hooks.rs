@@ -16,9 +16,13 @@ use core::cell::Cell;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
+use rs_matter::dm::clusters::app::color_control::{ColorControlHooks, RgbGamma, SetDeviceColor};
 use rs_matter::dm::clusters::app::level_control::LevelControlHooks;
 use rs_matter::dm::clusters::app::on_off::{self, OnOffHooks};
 use rs_matter::dm::clusters::decl::bridged_device_basic_information as bridged;
+use rs_matter::dm::clusters::decl::color_control::{
+    ColorCapabilitiesBitmap, Feature as CcFeature, FULL_CLUSTER as COLOR_CONTROL_FULL_CLUSTER,
+};
 use rs_matter::dm::clusters::decl::level_control::{
     AttributeId as LcAttr, CommandId as LcCmd, Feature as LcFeature,
     FULL_CLUSTER as LEVEL_CONTROL_FULL_CLUSTER,
@@ -28,6 +32,8 @@ use rs_matter::dm::{Cluster, Dataver, InvokeContext, ReadContext};
 use rs_matter::error::Error as MatterError;
 use rs_matter::tlv::{Nullable, TLVBuilderParent, Utf8StrBuilder};
 use rs_matter::with;
+
+use crate::color;
 
 use crate::ids::DeviceId;
 use crate::model::CapabilityState;
@@ -62,12 +68,18 @@ pub struct DeviceHooks {
     cells: Rc<LightCells>,
     to_engine: Sender<(DeviceId, CapabilityState)>,
     waker: Option<Waker>,
+    /// Whether the domiform device declares `Color` / `ColorTemperature`; gates
+    /// which controller color writes the [`ColorFacet`] forwards to the engine.
+    has_color: bool,
+    has_color_temp: bool,
 }
 
 impl DeviceHooks {
     pub fn new(
         device: DeviceId,
         label: String,
+        has_color: bool,
+        has_color_temp: bool,
         to_engine: Sender<(DeviceId, CapabilityState)>,
         waker: Option<Waker>,
     ) -> Self {
@@ -77,11 +89,23 @@ impl DeviceHooks {
             cells: Rc::new(LightCells::default()),
             to_engine,
             waker,
+            has_color,
+            has_color_temp,
         }
     }
 
     pub fn device_id(&self) -> DeviceId {
         self.device
+    }
+
+    /// Whether the device declares `Color` (an exposable hue/sat capability).
+    pub fn has_color(&self) -> bool {
+        self.has_color
+    }
+
+    /// Whether the device declares `ColorTemperature`.
+    pub fn has_color_temp(&self) -> bool {
+        self.has_color_temp
     }
 
     /// The Bridged Device Basic Information handler for this device's endpoint,
@@ -100,6 +124,14 @@ impl DeviceHooks {
                     .level
                     .set(Some(super::level::pct_to_matter(*pct)));
             }
+            // Color / ColorTemperature are *outward-only* today: rs-matter 0.2.0's
+            // ColorControl handler owns its attribute state internally and exposes
+            // no read-back hook (its `OutOfBandMessage::Update` is a no-op), so an
+            // engine-side color change cannot be pushed into the node's attributes.
+            // A controller still drives color fine (see `ColorFacet`); it just
+            // reflects the last controller-set color, not a southbound one. Revisit
+            // when the crate adds an engine→handler color-sync path.
+            CapabilityState::Color { .. } | CapabilityState::ColorTemperature(_) => {}
             _ => {}
         }
     }
@@ -119,6 +151,21 @@ impl DeviceHooks {
             cells: self.cells.clone(),
             to_engine: self.to_engine.clone(),
             waker: self.waker.clone(),
+        }
+    }
+
+    /// ColorControl hooks for this device. `has_color` / `has_color_temp` mirror
+    /// the domiform capabilities: a hue/sat write only emits `Color` if the device
+    /// declares `Color`, and a mireds write only emits `ColorTemperature` if the
+    /// device declares it — so the controller cannot drive a capability the
+    /// southbound device does not have.
+    pub fn color_hooks(&self, has_color: bool, has_color_temp: bool) -> ColorFacet {
+        ColorFacet {
+            device: self.device,
+            to_engine: self.to_engine.clone(),
+            waker: self.waker.clone(),
+            has_color,
+            has_color_temp,
         }
     }
 }
@@ -256,6 +303,111 @@ impl LevelControlHooks for LevelFacet {
     }
 
     fn set_start_up_current_level(&self, _value: Option<u8>) -> Result<(), MatterError> {
+        Ok(())
+    }
+}
+
+/// ColorControl hooks for one device.
+///
+/// Unlike OnOff/Level, rs-matter's ColorControl handler owns all attribute state
+/// internally and only calls *out* to the device via [`set_device_color`]. So this
+/// facet holds no shared cells: it forwards a controller-set color to the engine
+/// (mapping hue/sat → `Color`, mireds → `ColorTemperature`) and nothing more. The
+/// engine→node read-back is unsupported by the crate (see `apply_engine_state`).
+///
+/// [`set_device_color`]: ColorControlHooks::set_device_color
+pub struct ColorFacet {
+    device: DeviceId,
+    to_engine: Sender<(DeviceId, CapabilityState)>,
+    waker: Option<Waker>,
+    /// Whether the domiform device declares `Color` (gates hue/sat emission).
+    has_color: bool,
+    /// Whether the domiform device declares `ColorTemperature` (gates mireds).
+    has_color_temp: bool,
+}
+
+impl ColorControlHooks for ColorFacet {
+    // Advertise both hue/saturation and color-temperature. A single facet type
+    // must carry one cluster shape, so we always enable both features and let
+    // per-device capability flags (`has_color` / `has_color_temp`) decide which
+    // controller writes actually reach the engine. Revision 7 is required by the
+    // handler's own `validate()`.
+    const CLUSTER: Cluster<'static> = COLOR_CONTROL_FULL_CLUSTER
+        .with_revision(7)
+        .with_features(CcFeature::HUE_AND_SATURATION.bits() | CcFeature::COLOR_TEMPERATURE.bits())
+        .with_attrs(with!(
+            required;
+            // Mandatory attributes (independent of features).
+            rs_matter::dm::clusters::decl::color_control::AttributeId::ColorMode
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::Options
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::NumberOfPrimaries
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::EnhancedColorMode
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::ColorCapabilities
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::RemainingTime
+                // HUE_AND_SATURATION feature.
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::CurrentHue
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::CurrentSaturation
+                // COLOR_TEMPERATURE feature.
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::ColorTemperatureMireds
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::ColorTempPhysicalMinMireds
+                | rs_matter::dm::clusters::decl::color_control::AttributeId::ColorTempPhysicalMaxMireds
+        ))
+        .with_cmds(with!(
+            // StopMoveStep is mandatory when any move feature is enabled.
+            rs_matter::dm::clusters::decl::color_control::CommandId::StopMoveStep
+                // HUE_AND_SATURATION commands.
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveToHue
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveHue
+                | rs_matter::dm::clusters::decl::color_control::CommandId::StepHue
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveToSaturation
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveSaturation
+                | rs_matter::dm::clusters::decl::color_control::CommandId::StepSaturation
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveToHueAndSaturation
+                // COLOR_TEMPERATURE commands.
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveToColorTemperature
+                | rs_matter::dm::clusters::decl::color_control::CommandId::MoveColorTemperature
+                | rs_matter::dm::clusters::decl::color_control::CommandId::StepColorTemperature
+        ));
+
+    // Full color capabilities matching the enabled features.
+    const COLOR_CAPABILITIES: ColorCapabilitiesBitmap = ColorCapabilitiesBitmap::from_bits_truncate(
+        ColorCapabilitiesBitmap::HUE_SATURATION.bits()
+            | ColorCapabilitiesBitmap::COLOR_TEMPERATURE.bits(),
+    );
+
+    // Physical color-temperature bounds, in mireds. Mirrors domiform's tunable-
+    // white range (`color::COLD_KELVIN`..`WARM_KELVIN`): 6500 K ≈ 153 mireds (min),
+    // 2700 K ≈ 370 mireds (max). Must satisfy MIN < MAX.
+    const COLOR_TEMP_PHYSICAL_MIN_MIREDS: u16 = (1_000_000 / color::COLD_KELVIN) as u16;
+    const COLOR_TEMP_PHYSICAL_MAX_MIREDS: u16 = (1_000_000 / color::WARM_KELVIN) as u16;
+
+    fn set_device_color(&self, target: SetDeviceColor) -> Result<(), ()> {
+        match target {
+            SetDeviceColor::ColorTemperature { mireds } => {
+                if self.has_color_temp {
+                    emit(
+                        &self.to_engine,
+                        &self.waker,
+                        self.device,
+                        CapabilityState::ColorTemperature(mireds),
+                    );
+                }
+            }
+            // Hue/sat and xy both describe a chromaticity; map either to sRGB and
+            // emit as `Color`. Brightness is a separate capability, so we take the
+            // sRGB primaries at full value (rs-matter's `to_rgb` assumes full).
+            other => {
+                if self.has_color {
+                    let (r, g, b) = other.to_rgb(RgbGamma::SRgb);
+                    emit(
+                        &self.to_engine,
+                        &self.waker,
+                        self.device,
+                        CapabilityState::Color { r, g, b },
+                    );
+                }
+            }
+        }
         Ok(())
     }
 }

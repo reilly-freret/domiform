@@ -30,13 +30,18 @@
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
+use rs_matter::dm::clusters::app::color_control::{
+    self, AttributeDefaults as CcDefaults, ColorControlHooks as _,
+};
+use rs_matter::dm::clusters::app::level_control::NoOnOff;
 use rs_matter::dm::clusters::app::level_control::{self, LevelControlHooks as _};
-use rs_matter::dm::clusters::app::on_off::{self, OnOffHooks as _};
+use rs_matter::dm::clusters::app::on_off::{self, NoLevelControl, OnOffHooks as _};
 use rs_matter::dm::clusters::decl::bridged_device_basic_information as bridged;
 use rs_matter::dm::clusters::desc::{self, ClusterHandler as _};
 use rs_matter::dm::clusters::groups::{self, ClusterHandler as _};
 use rs_matter::dm::devices::{
-    DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_DIMMABLE_LIGHT, DEV_TYPE_ON_OFF_LIGHT,
+    DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_DIMMABLE_LIGHT,
+    DEV_TYPE_EXTENDED_COLOR_LIGHT, DEV_TYPE_ON_OFF_LIGHT,
 };
 use rs_matter::dm::networks::SysNetifs;
 use rs_matter::dm::{
@@ -46,12 +51,17 @@ use rs_matter::dm::{
 use rs_matter::error::Error as MatterError;
 use rs_matter::{clusters, devices};
 
-use super::hooks::{self, BridgedFacet, DeviceHooks, LevelFacet, OnOffFacet};
+use super::hooks::{self, BridgedFacet, ColorFacet, DeviceHooks, LevelFacet, OnOffFacet};
 
 /// The concrete On/Off handler type for one bridged endpoint.
 type OnOff<'a> = on_off::OnOffHandler<'a, OnOffFacet, LevelFacet>;
 /// The concrete Level Control handler type for one bridged endpoint.
 type Level<'a> = level_control::LevelControlHandler<'a, LevelFacet, OnOffFacet>;
+/// The concrete Color Control handler type for one bridged endpoint. Standalone
+/// (not coupled to OnOff/Level), so `NoOnOff`/`NoLevelControl` fill the coupling
+/// generics — color commands run regardless of on/off state, which is fine for a
+/// projection.
+type Color<'a> = color_control::ColorControlHandler<'a, ColorFacet, NoOnOff, NoLevelControl>;
 
 /// Endpoint id of the aggregator (endpoint 1 in a Matter bridge).
 pub const AGGREGATOR_EP: u16 = 1;
@@ -81,18 +91,19 @@ pub const NODE_CAPACITY: usize = MAX_MATTER_DEVICES + 2;
 // and patch its id. `DeviceType` isn't a nameable public type, so the
 // `devices!`/`clusters!` macros build the slices for us.
 
-/// Template for a bridged **dimmable** light endpoint (id patched per device).
-const DIMMABLE_TEMPLATE: Endpoint<'static> = Endpoint::new(
-    FIRST_BRIDGED_EP,
-    devices!(DEV_TYPE_DIMMABLE_LIGHT, DEV_TYPE_BRIDGED_NODE),
-    clusters!(
-        desc::DescHandler::CLUSTER,
-        groups::GroupsHandler::CLUSTER,
-        bridged::FULL_CLUSTER,
-        hooks::OnOffFacet::CLUSTER,
-        hooks::LevelFacet::CLUSTER
-    ),
-);
+/// The Matter shape a bridged endpoint takes, derived from a device's exposable
+/// capabilities. Determines the device type + which cluster templates the endpoint
+/// carries. `ExtendedColor` always includes Level (the device type mandates it),
+/// even if the domiform device declares no `Brightness`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndpointShape {
+    /// On/Off only.
+    OnOff,
+    /// On/Off + Level Control (dimmable).
+    Dimmable,
+    /// On/Off + Level Control + Color Control (extended color light).
+    ExtendedColor,
+}
 
 /// Template for a bridged **on/off** light endpoint (no Level Control).
 const ONOFF_TEMPLATE: Endpoint<'static> = Endpoint::new(
@@ -106,10 +117,39 @@ const ONOFF_TEMPLATE: Endpoint<'static> = Endpoint::new(
     ),
 );
 
+/// Template for a bridged **dimmable** light endpoint (id patched per device).
+const DIMMABLE_TEMPLATE: Endpoint<'static> = Endpoint::new(
+    FIRST_BRIDGED_EP,
+    devices!(DEV_TYPE_DIMMABLE_LIGHT, DEV_TYPE_BRIDGED_NODE),
+    clusters!(
+        desc::DescHandler::CLUSTER,
+        groups::GroupsHandler::CLUSTER,
+        bridged::FULL_CLUSTER,
+        hooks::OnOffFacet::CLUSTER,
+        hooks::LevelFacet::CLUSTER
+    ),
+);
+
+/// Template for a bridged **extended color** light endpoint (OnOff + Level +
+/// Color). The device type mandates Level Control, so it is present even when the
+/// domiform device exposes no brightness (seeded to full; see `LightCells`).
+const EXTCOLOR_TEMPLATE: Endpoint<'static> = Endpoint::new(
+    FIRST_BRIDGED_EP,
+    devices!(DEV_TYPE_EXTENDED_COLOR_LIGHT, DEV_TYPE_BRIDGED_NODE),
+    clusters!(
+        desc::DescHandler::CLUSTER,
+        groups::GroupsHandler::CLUSTER,
+        bridged::FULL_CLUSTER,
+        hooks::OnOffFacet::CLUSTER,
+        hooks::LevelFacet::CLUSTER,
+        hooks::ColorFacet::CLUSTER
+    ),
+);
+
 /// Build the runtime-sized bridge node metadata for the exposed devices (one
-/// `dimmable` flag each). Endpoints: root (0), aggregator (1), then one bridged
+/// [`EndpointShape`] each). Endpoints: root (0), aggregator (1), then one bridged
 /// endpoint per device (2..2+n).
-pub fn build_node(dimmable: &[bool]) -> DynamicNode<'static, NODE_CAPACITY> {
+pub fn build_node(shapes: &[EndpointShape]) -> DynamicNode<'static, NODE_CAPACITY> {
     // Root endpoint (id 0). Built as a `const` so the `root_endpoint!` macro's
     // borrowed cluster/device-type arrays get `'static` promotion.
     const ROOT: Endpoint<'static> = rs_matter::root_endpoint!(eth);
@@ -122,11 +162,11 @@ pub fn build_node(dimmable: &[bool]) -> DynamicNode<'static, NODE_CAPACITY> {
     let mut node = DynamicNode::new();
     let _ = node.add(ROOT);
     let _ = node.add(aggregator);
-    for (i, &dim) in dimmable.iter().enumerate() {
-        let mut ep = if dim {
-            DIMMABLE_TEMPLATE
-        } else {
-            ONOFF_TEMPLATE
+    for (i, &shape) in shapes.iter().enumerate() {
+        let mut ep = match shape {
+            EndpointShape::OnOff => ONOFF_TEMPLATE,
+            EndpointShape::Dimmable => DIMMABLE_TEMPLATE,
+            EndpointShape::ExtendedColor => EXTCOLOR_TEMPLATE,
         };
         ep.id = ep_of(i);
         let _ = node.add(ep);
@@ -156,11 +196,20 @@ pub struct Devices<'a> {
     pub on_off: Vec<OnOff<'a>>,
     pub level: Vec<Level<'a>>,
     pub bridged: Vec<BridgedFacet>,
+    /// One entry per device; `Some` only for [`EndpointShape::ExtendedColor`]
+    /// devices (others carry no ColorControl cluster). Index `i` ⇒ `ep_of(i)`.
+    pub color: Vec<Option<Color<'a>>>,
 }
 
 impl<'a> Devices<'a> {
-    /// Build one On/Off + Level + Bridged handler per device from its hooks.
-    pub fn new(hooks: &'a [DeviceHooks], rand: &mut (impl rand::RngCore + Copy)) -> Self {
+    /// Build one On/Off + Level + Bridged handler per device from its hooks, plus a
+    /// Color handler for each [`EndpointShape::ExtendedColor`] device. `shapes` must
+    /// be parallel to `hooks` (same order/length).
+    pub fn new(
+        hooks: &'a [DeviceHooks],
+        shapes: &[EndpointShape],
+        rand: &mut (impl rand::RngCore + Copy),
+    ) -> Self {
         let on_off = hooks
             .iter()
             .enumerate()
@@ -184,10 +233,28 @@ impl<'a> Devices<'a> {
             .iter()
             .map(|h| h.bridged_facet(Dataver::new_rand(rand)))
             .collect();
+        let color = hooks
+            .iter()
+            .zip(shapes)
+            .enumerate()
+            .map(|(i, (h, shape))| {
+                (*shape == EndpointShape::ExtendedColor).then(|| {
+                    // Standalone (uncoupled) — validates and applies any startup CT
+                    // in `new_standalone`. The facet gates emission by capability.
+                    color_control::ColorControlHandler::new_standalone(
+                        Dataver::new_rand(rand),
+                        ep_of(i),
+                        h.color_hooks(h.has_color(), h.has_color_temp()),
+                        CcDefaults::default(),
+                    )
+                })
+            })
+            .collect();
         Self {
             on_off,
             level,
             bridged,
+            color,
         }
     }
 
@@ -295,6 +362,78 @@ dispatch_shim!(BridgedDispatch, bridged, |h| Async(
     bridged::HandlerAdaptor(h)
 ));
 
+/// ColorControl dispatch shim. Unlike the others, its per-device field is
+/// `Vec<Option<Color>>` (only extended-color endpoints have a handler), so it must
+/// route through the `Option` and treat a missing entry — a controller addressing
+/// ColorControl on a non-color endpoint — as "cluster not present" rather than a
+/// panic. Otherwise identical to [`dispatch_shim!`].
+pub struct ColorDispatch<'a>(&'a Devices<'a>);
+
+impl<'a> ColorDispatch<'a> {
+    /// The color handler for the endpoint in `ctx`, if that endpoint is an
+    /// extended-color light.
+    fn handler(&self, ctx: &impl MatchContext) -> Option<&Color<'a>> {
+        let i = index_of(ctx, self.0.len())?;
+        self.0.color.get(i).and_then(|slot| slot.as_ref())
+    }
+}
+
+impl<'a> AsyncHandler for ColorDispatch<'a> {
+    async fn read(&self, ctx: impl ReadContext, reply: impl ReadReply) -> Result<(), MatterError> {
+        match self.handler(&ctx) {
+            Some(h) => color_control::HandlerAsyncAdaptor(h).read(ctx, reply).await,
+            None => Err(rs_matter::error::ErrorCode::EndpointNotFound.into()),
+        }
+    }
+
+    async fn write(&self, ctx: impl WriteContext) -> Result<(), MatterError> {
+        match self.handler(&ctx) {
+            Some(h) => color_control::HandlerAsyncAdaptor(h).write(ctx).await,
+            None => Err(rs_matter::error::ErrorCode::EndpointNotFound.into()),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        ctx: impl InvokeContext,
+        reply: impl InvokeReply,
+    ) -> Result<(), MatterError> {
+        match self.handler(&ctx) {
+            Some(h) => {
+                color_control::HandlerAsyncAdaptor(h)
+                    .invoke(ctx, reply)
+                    .await
+            }
+            None => Err(rs_matter::error::ErrorCode::CommandNotFound.into()),
+        }
+    }
+
+    fn bump_dataver(&self, ctx: impl MatchContext) {
+        if let Some(h) = self.handler(&ctx) {
+            color_control::HandlerAsyncAdaptor(h).bump_dataver(ctx);
+        }
+    }
+
+    async fn run(&self, ctx: impl HandlerContext) -> Result<(), MatterError> {
+        let ctx = &ctx;
+        let mut jobs: FuturesUnordered<_> = self
+            .0
+            .color
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .map(|h| async move { color_control::HandlerAsyncAdaptor(h).run(ctx).await })
+            .collect();
+        if jobs.is_empty() {
+            core::future::pending::<()>().await;
+            return Ok(());
+        }
+        while let Some(r) = jobs.next().await {
+            r?;
+        }
+        Ok(())
+    }
+}
+
 /// Build the composed data model for the whole bridge: node metadata + a
 /// **fixed-depth** handler chain (system handlers, the aggregator descriptor, a
 /// shared bridged-endpoint descriptor + groups handler matched on any endpoint,
@@ -335,6 +474,10 @@ pub fn build_data_model<'a>(
         .chain(
             EpClMatcher::new(None, Some(hooks::LevelFacet::CLUSTER.id)),
             LevelDispatch(devices),
+        )
+        .chain(
+            EpClMatcher::new(None, Some(hooks::ColorFacet::CLUSTER.id)),
+            ColorDispatch(devices),
         );
 
     (NodeMeta(node), handler)

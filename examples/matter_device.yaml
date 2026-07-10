@@ -6,7 +6,9 @@
 # projects devices declared under the southbound `z2m` adapter, so the YAML stays
 # the single source of truth.
 #
-# Each exposed device becomes a bridged Matter accessory (Switch / Brightness).
+# Each exposed device becomes a bridged Matter accessory. Switch, Brightness,
+# Color and ColorTemperature project to the matching Matter clusters (a device
+# with color/color-temp appears as an extended color light).
 # Note: Apple Home often ignores bridged Matter device names and shows generic
 # labels ("Light", …) — that is a controller-side quirk, not a config bug. Run
 # it, then scan the pairing QR printed to the log into your Home app.
@@ -37,7 +39,7 @@ devices:
   living_room_lamp:
     adapter: z2m
     address: living_room_rgb
-    capabilities: [switch, brightness]
+    capabilities: [switch, brightness, color, color_temperature]
 
   kitchen_light:
     adapter: z2m

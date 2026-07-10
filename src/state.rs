@@ -39,4 +39,14 @@ impl StateStore {
     pub fn switch_is(&self, device: DeviceId) -> Option<bool> {
         self.bool_value(device, CapabilityKind::Switch)
     }
+
+    /// Every known `(device, capability state)` pair, in arbitrary order. Used at
+    /// boot to replay the current state into a freshly-added northbound adapter so
+    /// its projection (e.g. a Matter node's attribute cells) reflects engine truth
+    /// rather than protocol defaults.
+    pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &CapabilityState)> {
+        self.map
+            .iter()
+            .map(|(&(device, _kind), state)| (device, state))
+    }
 }

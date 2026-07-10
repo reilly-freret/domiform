@@ -77,6 +77,9 @@ pub struct ExposedDevice {
 /// real transport is the only thing that needs the concrete device-type ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatterDeviceType {
+    /// Has color (hue/sat) and/or color temperature — an extended color light
+    /// (0x010D). Always carries OnOff + LevelControl + ColorControl.
+    ExtendedColorLight,
     /// Has brightness (dimmable light, 0x0101).
     DimmableLight,
     /// On/off only (on/off light or plug-in unit, 0x0100).
@@ -88,12 +91,14 @@ pub enum MatterDeviceType {
 }
 
 /// Classify a device's capabilities into the Matter device type its endpoint
-/// advertises. Brightness implies a dimmable light; a bare switch is an on/off
-/// light; occupancy alone is a sensor. (Color/color-temp fold into the light
-/// types once their clusters are wired — see `capability_clusters`.)
+/// advertises. Color or color-temperature makes an extended color light (which
+/// subsumes dimming and on/off); brightness alone is a dimmable light; a bare
+/// switch is an on/off light; occupancy alone is a sensor.
 pub fn device_type_for(caps: &[CapabilityKind]) -> MatterDeviceType {
     let has = |k: CapabilityKind| caps.contains(&k);
-    if has(CapabilityKind::Brightness) {
+    if has(CapabilityKind::Color) || has(CapabilityKind::ColorTemperature) {
+        MatterDeviceType::ExtendedColorLight
+    } else if has(CapabilityKind::Brightness) {
         MatterDeviceType::DimmableLight
     } else if has(CapabilityKind::Switch) {
         MatterDeviceType::OnOffLight
@@ -108,13 +113,19 @@ pub fn device_type_for(caps: &[CapabilityKind]) -> MatterDeviceType {
 /// cluster attribute. Drives both endpoint construction (which clusters to add)
 /// and the publish/poll mapping.
 ///
-/// Only Switch and Brightness are wired in the live node today. Occupancy,
-/// Battery, Color, and ColorTemperature are deliberately *not* admitted here —
-/// admitting them without cluster handlers would advertise the wrong device type
+/// Switch, Brightness, Color, and ColorTemperature are wired in the live node.
+/// Occupancy and Battery are deliberately *not* admitted here — admitting them
+/// without their sensor/power clusters would advertise the wrong device type
 /// (e.g. an occupancy sensor as an On/Off light). Engine-internal capabilities
 /// (IR, time-of-day, sun) are never exposed.
 pub fn capability_is_exposable(kind: CapabilityKind) -> bool {
-    matches!(kind, CapabilityKind::Switch | CapabilityKind::Brightness)
+    matches!(
+        kind,
+        CapabilityKind::Switch
+            | CapabilityKind::Brightness
+            | CapabilityKind::Color
+            | CapabilityKind::ColorTemperature
+    )
 }
 
 /// Adapter that projects a set of domiform devices as a Matter node.

@@ -162,6 +162,22 @@ pub fn connect(
     Box::new(ChannelTransport { to_node, from_node })
 }
 
+/// The bridged-endpoint shape for a device, from its exposable capabilities.
+/// Color or color-temperature → extended color light (which also carries Level +
+/// OnOff); brightness → dimmable; a bare switch → on/off. This mirrors
+/// [`device_type_for`](super::device_type_for) at the transport layer, choosing the
+/// concrete endpoint template.
+fn shape_for(d: &ExposedDevice) -> bridge::EndpointShape {
+    let has = |k: CapabilityKind| d.capabilities.contains(&k);
+    if has(CapabilityKind::Color) || has(CapabilityKind::ColorTemperature) {
+        bridge::EndpointShape::ExtendedColor
+    } else if has(CapabilityKind::Brightness) {
+        bridge::EndpointShape::Dimmable
+    } else {
+        bridge::EndpointShape::OnOff
+    }
+}
+
 /// Run the Matter bridge node until a fatal error. All on the node thread. The
 /// node exposes every device in `devices` as a bridged endpoint (see
 /// [`bridge`]); the engine talks to it over the two channels.
@@ -173,13 +189,10 @@ fn run_node(
     outbound_to_engine: Sender<Msg>,
     waker: Option<Waker>,
 ) -> Result<(), MatterError> {
-    // Per-device dimmability drives each bridged endpoint's shape (On/Off vs
-    // dimmable light). The order here fixes the endpoint-id assignment (device `i`
-    // → endpoint `2 + i`).
-    let dimmable: Vec<bool> = devices
-        .iter()
-        .map(|d| d.capabilities.contains(&CapabilityKind::Brightness))
-        .collect();
+    // Each device's exposable capabilities pick its bridged-endpoint shape
+    // (on/off vs dimmable vs extended color). The order here fixes the endpoint-id
+    // assignment (device `i` → endpoint `2 + i`).
+    let shapes: Vec<bridge::EndpointShape> = devices.iter().map(shape_for).collect();
 
     // Root node details: start from the test config (keeping the test VID/PID so
     // the test attestation still validates during commissioning) and brand the
@@ -213,20 +226,23 @@ fn run_node(
             DeviceHooks::new(
                 d.id,
                 d.label.clone(),
+                d.capabilities.contains(&CapabilityKind::Color),
+                d.capabilities.contains(&CapabilityKind::ColorTemperature),
                 outbound_to_engine.clone(),
                 waker.clone(),
             )
         })
         .collect();
 
-    // The real per-endpoint handlers (one On/Off + Level + Bridged per device).
-    // Built first, then coupled by reference — so `devices_h` must not move after.
-    let devices_h = bridge::Devices::new(&hooks, &mut { rand });
+    // The real per-endpoint handlers (On/Off + Level + Bridged per device, plus
+    // Color for extended-color devices). Built first, then coupled by reference —
+    // so `devices_h` must not move after.
+    let devices_h = bridge::Devices::new(&hooks, &shapes, &mut { rand });
     devices_h.couple();
 
     // Runtime-sized node metadata: root + aggregator + one bridged endpoint per
     // exposed device.
-    let node = bridge::build_node(&dimmable);
+    let node = bridge::build_node(&shapes);
 
     let dm = bridge::build_data_model(&node, &devices_h, rand);
     let im = InteractionModel::new(&matter, &crypto, &buffers, dm, &kv, &state);

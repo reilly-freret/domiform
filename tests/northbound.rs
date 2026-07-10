@@ -141,6 +141,41 @@ fn northbound_coexists_with_a_trace_observer() {
     assert_eq!(bridge.latest(LIGHT), Some(CapabilityState::Switch(false)));
 }
 
+#[test]
+fn start_replays_existing_state_into_a_freshly_added_northbound_adapter() {
+    // A northbound adapter added after state already exists (e.g. a projection
+    // built at boot) is caught up by `start()`: it receives the current store as
+    // `state_folded`, so its mirror reflects engine truth rather than defaults.
+    let recorder = Recorder::default();
+    let mut engine = Engine::new();
+    let idx = engine.add_adapter(Box::new(recorder));
+    engine.bind_device(LIGHT, idx);
+
+    // Seed engine state *before* the bridge exists.
+    engine.inject(Event::StateReported {
+        device: LIGHT,
+        state: CapabilityState::Switch(true),
+    });
+    engine.inject(Event::StateReported {
+        device: LIGHT,
+        state: CapabilityState::Brightness(42),
+    });
+
+    // Now add a fresh bridge — it has seen nothing yet.
+    let bridge = MockNorthbound::new();
+    assert!(bridge.mirrored().is_empty());
+    engine.add_northbound(Box::new(bridge.clone()));
+
+    // start() replays the store into the northbound adapter.
+    engine.start();
+
+    assert_eq!(bridge.latest(LIGHT), Some(CapabilityState::Switch(true)));
+    let mut kinds: Vec<_> = bridge.mirrored().iter().map(|(_, s)| s.clone()).collect();
+    kinds.sort_by_key(|s| format!("{s:?}"));
+    assert!(kinds.contains(&CapabilityState::Switch(true)));
+    assert!(kinds.contains(&CapabilityState::Brightness(42)));
+}
+
 // --- config / compile path ---------------------------------------------------
 
 #[test]
