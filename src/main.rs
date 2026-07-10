@@ -302,6 +302,7 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // inbound `Waker`, advance virtual time by the elapsed wall-clock, drain.
     let mut last = Instant::now();
     loop {
+        // TODO: handle exits gracefully (esp from dockerized builds -- right now it takes ~10 seconds to exit once docker daemon sends the first signal)
         let timeout = engine
             .next_wake_delay()
             .map(Duration::from_millis)
