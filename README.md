@@ -24,6 +24,45 @@ the state and the controller must re-pair. The reproducibility guarantee covers
 the configuration — not commissioned identities, which no declarative file can
 capture.
 
+### Known limitations of the Matter bridge
+
+Two rough edges are worth knowing before you rely on `matter_device`. Neither is a
+bug we can fix from domiform's side:
+
+- **Device names.** domiform serves each bridged device's real name to the
+  controller (via the Bridged Device Basic Information cluster), but **Apple Home
+  ignores it for bridged Matter devices** and shows its own device-type defaults
+  ("Light", "Light 2", …), with the bridge itself listed as "Matter Accessory".
+  This is a well-known Apple-side limitation shared by every Matter bridge (Home
+  Assistant's included) — rename the accessories once in the Home app and the names
+  stick. Google Home and Alexa are better-behaved.
+- **Color is controller-authoritative.** A color / color-temperature change made
+  *inside* domiform (a rule, or another adapter) is **not** reflected back to a
+  controller reading the Matter node — the underlying `rs-matter` (0.2) color
+  cluster exposes no way to push an externally-set color into its attributes. Color
+  set *from* a controller works fine; only the reverse (domiform → controller color
+  sync) is missing. On/off and brightness sync both directions normally. This lifts
+  when `rs-matter` adds an engine→handler color write-back.
+
+### Virtual devices (`type: virtual`)
+
+Some devices have no protocol that reports their state — a "dumb" air conditioner
+driven only by an IR remote is the canonical case. The `virtual` adapter lets you
+declare a **domiform-owned stateful device**: it holds state that lives only in
+domiform, echoing each commanded value back as truth. Its *behavior* lives in rules,
+not the adapter.
+
+This is what turns a stateless appliance into a real, tappable tile in Apple Home:
+declare a virtual `switch`, expose it via `matter_device`, and write a rule that
+translates its changes into IR. A tap in the Home app (or a wall button toggling the
+same virtual switch) flips the state and fires the IR — see
+[`examples/virtual_ac.yaml`](examples/virtual_ac.yaml).
+
+Because write-only IR can't report the appliance's real state, a virtual switch is
+domiform's *belief*, not ground truth: using the OEM remote can drift the tile out of
+sync. That's inherent to IR, not a domiform bug. Where the appliance has discrete
+on/off IR codes (not just a toggle), a rule per direction keeps them aligned.
+
 ## Docker
 
 Domiform ships a small (~17 MB) static Alpine image. You can either pull a

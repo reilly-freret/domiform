@@ -137,9 +137,9 @@ fn inbound_occupancy_and_battery_become_events() {
     );
     let events = a.tick(0);
 
-    assert!(events.contains(&Event::OccupancyChanged {
+    assert!(events.contains(&Event::StateReported {
         device: MOTION,
-        occupied: true
+        state: domiform::CapabilityState::Occupancy(true),
     }));
     assert!(events.iter().any(|e| matches!(
         e,
@@ -479,9 +479,10 @@ fn full_loop_inbound_message_to_outbound_publish() {
     engine.bind_device(LIGHT, idx);
     engine.add_rule(Rule::new(
         domiform::RuleId(0),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: MOTION,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::Always,
         vec![Command::SetSwitch {

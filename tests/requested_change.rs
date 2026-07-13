@@ -11,7 +11,8 @@ use std::rc::Rc;
 use domiform::ids::DeviceId;
 use domiform::model::{CapabilityState, Millis};
 use domiform::{
-    Adapter, Command, Condition, DispatchOutcome, Engine, Event, Rule, RuleId, Trigger,
+    Adapter, CapabilityKind, Command, Condition, DispatchOutcome, Engine, Event, Rule, RuleId,
+    Trigger,
 };
 
 const LIGHT: DeviceId = DeviceId(1);
@@ -111,9 +112,10 @@ fn requesting_a_tap_matches_the_equivalent_rule_command() {
     rule_engine.bind_device(LIGHT, ridx);
     rule_engine.add_rule(Rule::new(
         RuleId(0),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: BUTTON,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::Always,
         vec![Command::SetSwitch {
@@ -121,9 +123,9 @@ fn requesting_a_tap_matches_the_equivalent_rule_command() {
             on: true,
         }],
     ));
-    rule_engine.inject(Event::OccupancyChanged {
+    rule_engine.inject(Event::StateReported {
         device: BUTTON,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
 
     // Path 2: a northbound request expressing the same desired state.

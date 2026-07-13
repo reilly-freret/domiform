@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# Virtual device example: surface a "dumb", IR-only air conditioner as a real,
+# tappable On/Off tile in Apple Home.
+#
+# The AC can only be toggled by an IR remote and can't report its state, so we
+# model its power as a **virtual switch** (`ac_power`, on the `virtual` adapter).
+# domiform owns that switch's state; a rule turns each change into an IR pulse.
+# `matter_device` then exposes the virtual switch like any other — one tap in the
+# Home app flips `ac_power`, which fires the IR.
+#
+# Known limitation: because IR is write-only, `ac_power` is domiform's *belief*
+# about the AC, not ground truth. If someone uses the OEM remote, the tile and the
+# AC can drift out of sync. Inherent to IR — see README "Known limitations".
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+  runtime_storage_path: ./runtime
+
+adapters:
+  z2m:
+    type: zigbee2mqtt
+    url: mqtt://burrow.kite-lydian.ts.net:1883
+    base_topic: zigbee2mqtt
+
+  # Owns state for devices with no physical backing. Takes no config.
+  virtual:
+    type: virtual
+
+  # Exposes the virtual switch to Apple Home / Google / Alexa.
+  home:
+    type: matter_device
+    expose: [ac_power]
+
+devices:
+  # A wall paddle: stateless, event-only (no capabilities).
+  wall_button:
+    adapter: z2m
+    address: "wall_switch_a"
+    events:
+      press: toggle_l1
+
+  # The IR blaster that actually talks to the AC.
+  living_room_ir_blaster:
+    adapter: z2m
+    address: "ir_blaster_a"
+    capabilities: [ir_transmitter]
+
+  # The virtual switch that fronts the AC. Its `switch` state is domiform's, and
+  # `matter_device` exposes it as a normal On/Off accessory.
+  ac_power:
+    adapter: virtual
+    capabilities: [switch]
+
+rules:
+  # A tap in Apple Home (or any controller) flips `ac_power`; fire the IR toggle on
+  # either edge. (A toggle-only AC uses the same code both ways; an AC with discrete
+  # on/off codes would send its `on` code here and its `off` code below.)
+  ac_turned_on:
+    when: { changed: { device: ac_power, capability: switch, to: true } }
+    then:
+      - send_ir_code: { device: living_room_ir_blaster, code: "<base64-ac-toggle>" }
+
+  ac_turned_off:
+    when: { changed: { device: ac_power, capability: switch, to: false } }
+    then:
+      - send_ir_code: { device: living_room_ir_blaster, code: "<base64-ac-toggle>" }
+
+  # The wall button toggles the *same* virtual switch, so the wall, the Home app,
+  # and domiform all agree on one state (single source of truth).
+  wall_toggles_ac:
+    when: { event: wall_button.press }
+    then:
+      - toggle: ac_power

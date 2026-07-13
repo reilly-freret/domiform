@@ -32,11 +32,61 @@ pub enum CapabilityKind {
     ColorTemperature,
     Occupancy,
     Battery,
+    /// Ambient temperature. Canonical unit: **centidegrees Celsius** (2350 =
+    /// 23.5 °C). Numeric-shaped.
+    Temperature,
+    /// Relative humidity, **whole percent** 0..=100. Numeric-shaped.
+    Humidity,
+    /// Ambient light level in **lux**. Numeric-shaped.
+    Illuminance,
+    /// Instantaneous electrical power in **watts**. Numeric-shaped.
+    Power,
+    /// Contact sensor (door/window). Bool-shaped; `true` = **open**.
+    Contact,
+    /// Water-leak sensor. Bool-shaped; `true` = **leak detected**.
+    WaterLeak,
+    /// Smoke detector. Bool-shaped; `true` = **smoke detected**.
+    Smoke,
     /// Write-only IR blaster. No corresponding [`CapabilityState`] — sends are
     /// fire-and-forget and adapters do not fold inbound IR into the state store.
     IrTransmitter,
     TimeOfDay,
     SunUp,
+}
+
+impl CapabilityKind {
+    /// Whether this capability is numeric-shaped — i.e. its `CapabilityState`
+    /// yields a value from [`CapabilityState::as_i64`] and so can be read by a
+    /// `Compare` condition / `crosses` trigger. Kept in sync with `as_i64` by the
+    /// same exhaustive `match` the compiler enforces on both.
+    pub fn is_numeric(self) -> bool {
+        matches!(
+            self,
+            CapabilityKind::Brightness
+                | CapabilityKind::Battery
+                | CapabilityKind::ColorTemperature
+                | CapabilityKind::TimeOfDay
+                | CapabilityKind::Temperature
+                | CapabilityKind::Humidity
+                | CapabilityKind::Illuminance
+                | CapabilityKind::Power
+        )
+    }
+
+    /// Whether this capability is boolean-shaped — i.e. its `CapabilityState`
+    /// yields a value from [`CapabilityState::as_bool`] and so can be read by a
+    /// `BoolEquals` condition / `changed` trigger. Kept in sync with `as_bool`.
+    pub fn is_bool(self) -> bool {
+        matches!(
+            self,
+            CapabilityKind::Switch
+                | CapabilityKind::Occupancy
+                | CapabilityKind::SunUp
+                | CapabilityKind::Contact
+                | CapabilityKind::WaterLeak
+                | CapabilityKind::Smoke
+        )
+    }
 }
 
 /// State lives on capabilities, not devices — this avoids one giant
@@ -45,12 +95,30 @@ pub enum CapabilityKind {
 pub enum CapabilityState {
     Switch(bool),
     Brightness(u8), // 0..=100
-    Color { r: u8, g: u8, b: u8 },
+    Color {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
     ColorTemperature(u16), // mireds
     Occupancy(bool),
     Battery(u8),
-    TimeOfDay(u16), // minutes since local midnight, 0..1440
-    SunUp(bool),    // false = after sunset / before sunrise (real solar ephemeris)
+    /// Ambient temperature in **centidegrees Celsius** (2350 = 23.5 °C). Signed
+    /// so sub-zero readings are representable. Every adapter must convert its
+    /// protocol-native unit to this on fold — the canonical-unit contract that
+    /// keeps cross-adapter rules correct.
+    Temperature(i16),
+    /// Relative humidity, **whole percent** 0..=100.
+    Humidity(u8),
+    /// Ambient light level in **lux**.
+    Illuminance(u32),
+    /// Instantaneous electrical power in **watts**.
+    Power(u32),
+    Contact(bool),   // true = open
+    WaterLeak(bool), // true = leak detected
+    Smoke(bool),     // true = smoke detected
+    TimeOfDay(u16),  // minutes since local midnight, 0..1440
+    SunUp(bool),     // false = after sunset / before sunrise (real solar ephemeris)
 }
 
 impl CapabilityState {
@@ -62,6 +130,13 @@ impl CapabilityState {
             CapabilityState::ColorTemperature(_) => CapabilityKind::ColorTemperature,
             CapabilityState::Occupancy(_) => CapabilityKind::Occupancy,
             CapabilityState::Battery(_) => CapabilityKind::Battery,
+            CapabilityState::Temperature(_) => CapabilityKind::Temperature,
+            CapabilityState::Humidity(_) => CapabilityKind::Humidity,
+            CapabilityState::Illuminance(_) => CapabilityKind::Illuminance,
+            CapabilityState::Power(_) => CapabilityKind::Power,
+            CapabilityState::Contact(_) => CapabilityKind::Contact,
+            CapabilityState::WaterLeak(_) => CapabilityKind::WaterLeak,
+            CapabilityState::Smoke(_) => CapabilityKind::Smoke,
             CapabilityState::TimeOfDay(_) => CapabilityKind::TimeOfDay,
             CapabilityState::SunUp(_) => CapabilityKind::SunUp,
         }
@@ -73,7 +148,10 @@ impl CapabilityState {
         match self {
             CapabilityState::Switch(b)
             | CapabilityState::Occupancy(b)
-            | CapabilityState::SunUp(b) => Some(*b),
+            | CapabilityState::SunUp(b)
+            | CapabilityState::Contact(b)
+            | CapabilityState::WaterLeak(b)
+            | CapabilityState::Smoke(b) => Some(*b),
             _ => None,
         }
     }
@@ -82,8 +160,12 @@ impl CapabilityState {
     /// condition evaluator compare brightness / battery / time-of-day uniformly.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            CapabilityState::Brightness(v) | CapabilityState::Battery(v) => Some(*v as i64),
+            CapabilityState::Brightness(v)
+            | CapabilityState::Battery(v)
+            | CapabilityState::Humidity(v) => Some(*v as i64),
             CapabilityState::ColorTemperature(v) | CapabilityState::TimeOfDay(v) => Some(*v as i64),
+            CapabilityState::Temperature(v) => Some(*v as i64),
+            CapabilityState::Illuminance(v) | CapabilityState::Power(v) => Some(*v as i64),
             _ => None,
         }
     }
@@ -107,14 +189,7 @@ pub enum Event {
     /// A stateless device event fired — a button press, knob turn, scene button.
     /// `action` is the interned identity of one of the device's declared
     /// `events`; the adapter resolved it from the raw protocol string.
-    Action {
-        device: DeviceId,
-        action: ActionId,
-    },
-    OccupancyChanged {
-        device: DeviceId,
-        occupied: bool,
-    },
+    Action { device: DeviceId, action: ActionId },
     /// A device reporting its own state back (the feedback path). Updates the
     /// state store; rules may also trigger on it. The clock adapter uses this
     /// same event to publish time-of-day and sun state.
@@ -138,13 +213,9 @@ pub enum Event {
         desired: CapabilityState,
     },
     /// Emitted by the scheduler when a wall-clock schedule comes due.
-    TimeReached {
-        schedule: ScheduleId,
-    },
+    TimeReached { schedule: ScheduleId },
     /// Emitted by the scheduler when a relative timer elapses.
-    TimerElapsed {
-        key: TimerKey,
-    },
+    TimerElapsed { key: TimerKey },
     /// A command that could not be dispatched — emitted after retries are
     /// exhausted, or immediately for a permanent failure. It rides the same bus
     /// so rules can react (notify, fall back); it is also surfaced to the

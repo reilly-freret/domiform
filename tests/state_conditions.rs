@@ -9,8 +9,8 @@ use chrono::{TimeZone, Utc};
 use chrono_tz::Tz;
 use domiform::ids::DeviceId;
 use domiform::{
-    CapabilityKind, ClockAdapter, Command, Condition, Engine, Event, MockDeviceAdapter, Rule,
-    RuleId, Trigger,
+    CapabilityKind, CapabilityState, ClockAdapter, Command, Condition, Engine, Event,
+    MockDeviceAdapter, Rule, RuleId, Trigger,
 };
 
 const MOTION: DeviceId = DeviceId(1);
@@ -47,9 +47,10 @@ fn build() -> Engine {
 
     engine.add_rule(Rule::new(
         RuleId(1),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: MOTION,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::BoolEquals {
             device: SUN,
@@ -66,9 +67,19 @@ fn build() -> Engine {
 }
 
 fn motion() -> Event {
-    Event::OccupancyChanged {
+    Event::StateReported {
         device: MOTION,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
+    }
+}
+
+/// The sensor going idle — needed between two `motion()`s so the second is a
+/// real occupancy *edge* (the `changed ... to: true` trigger fires only on the
+/// transition into occupied, not on a repeated occupied report).
+fn motion_clear() -> Event {
+    Event::StateReported {
+        device: MOTION,
+        state: CapabilityState::Occupancy(false),
     }
 }
 
@@ -106,8 +117,9 @@ fn condition_re_evaluates_as_time_passes() {
     engine.advance(12 * 60 * MINUTE_MS); // noon
     engine.inject(motion());
     assert_ne!(engine.switch_state(LIGHT), Some(true), "noon: suppressed");
+    engine.inject(motion_clear()); // sensor returns to idle
 
     engine.advance(7 * 60 * MINUTE_MS); // 19:00, past sunset
-    engine.inject(motion());
+    engine.inject(motion()); // a fresh occupancy edge
     assert_eq!(engine.switch_state(LIGHT), Some(true), "evening: fires");
 }

@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use domiform::ids::{DeviceId, RuleId};
 use domiform::rule::{Condition, Rule, Trigger};
 use domiform::{
-    Adapter, AttrReport, ClusterCommand, Command, EndpointId, Engine, Event, MatterAdapter,
-    MatterController, NodeId,
+    Adapter, AttrReport, CapabilityKind, CapabilityState, ClusterCommand, Command, EndpointId,
+    Engine, Event, MatterAdapter, MatterController, NodeId,
 };
 
 const MOTION: DeviceId = DeviceId(0);
@@ -151,9 +151,9 @@ fn inbound_occupancy_and_battery_become_events() {
     c.report(MOTION_NODE, EP, POWER_SOURCE, BAT_PERCENT, json!(160));
     let events = a.tick(0);
 
-    assert!(events.contains(&Event::OccupancyChanged {
+    assert!(events.contains(&Event::StateReported {
         device: MOTION,
-        occupied: true
+        state: CapabilityState::Occupancy(true),
     }));
     assert!(events.iter().any(|e| matches!(
         e,
@@ -315,9 +315,10 @@ fn full_loop_attribute_report_to_cluster_invoke() {
     engine.bind_device(LAMP, idx);
     engine.add_rule(Rule::new(
         RuleId(0),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: MOTION,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::Always,
         vec![Command::SetSwitch {

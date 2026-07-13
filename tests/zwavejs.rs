@@ -14,7 +14,8 @@ use domiform::adapters::zwavejs::{EndpointId, NodeId};
 use domiform::ids::{ActionId, DeviceId, RuleId};
 use domiform::rule::{Condition, Rule, Trigger};
 use domiform::{
-    Adapter, Command, DeviceKind, Engine, Event, SetValue, ValueUpdate, ZwaveAdapter, ZwaveClient,
+    Adapter, CapabilityState, Command, DeviceKind, Engine, Event, SetValue, ValueUpdate,
+    ZwaveAdapter, ZwaveClient,
 };
 
 const REMOTE: DeviceId = DeviceId(0); // a Central Scene wall dimmer / scene controller
@@ -199,16 +200,16 @@ fn inbound_battery_and_occupancy_become_events() {
         e,
         Event::StateReported { device: SENSOR, state } if format!("{state:?}").contains("Battery(80)")
     )));
-    assert!(events.contains(&Event::OccupancyChanged {
+    assert!(events.contains(&Event::StateReported {
         device: SENSOR,
-        occupied: true
+        state: CapabilityState::Occupancy(true),
     }));
 
     // Home Security idle (0) clears occupancy.
     c.update(SENSOR_NODE, NOTIFICATION, "Home Security", json!(0));
-    assert!(a.tick(0).contains(&Event::OccupancyChanged {
+    assert!(a.tick(0).contains(&Event::StateReported {
         device: SENSOR,
-        occupied: false
+        state: CapabilityState::Occupancy(false),
     }));
 }
 

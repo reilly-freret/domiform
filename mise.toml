@@ -2,11 +2,33 @@
 rust = "stable"
 
 [env]
-DOCKER_TAG = "ghcr.io/reilly-freret/domiform:latest"
+DOCKER_PREFIX = "ghcr.io/reilly-freret/domiform"
 DOCKER_PLATFORMS = "linux/arm64,linux/amd64"
 
 [tasks.check]
-run = "cargo fmt && cargo clippy && cargo check && cargo run -- --check examples/*.yaml"
+run = [
+  "cargo fmt",
+  "cargo clippy",
+  "cargo check",
+  "cargo run -- --check examples/*.yaml",
+]
+
+[tasks.assert-git-clean]
+run = [
+  # https://stackoverflow.com/a/2659808 
+  'git diff-index --quiet --cached HEAD -- || (echo "staged-but-uncommitted changes" && exit 1)',
+  # return 1 iff unstaged changes
+  'git diff-files --quiet || (echo "unstaged changes" && exit 1)',
+  # return 1 iff untracked-and-unignored changes
+  'test -z $(git ls-files --exclude-standard --others) || (echo "untracked changes" && exit 1)',
+]
 
 [tasks.build-docker]
-run = "docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_TAG} --push ."
+depends = ["assert-git-clean"]
+run = '''
+  GIT_REVISION_SHA_SHORT=$(git rev-parse --short HEAD)
+  GIT_BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+  DOCKER_TAG="${GIT_BRANCH_NAME}-${GIT_REVISION_SHA_SHORT}"
+  docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_PREFIX}:${DOCKER_TAG} --push . 
+'''
+alias = "bd"

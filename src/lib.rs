@@ -58,7 +58,7 @@ pub use adapters::{
     ExposedDevice, InMemoryMatter, MatterAdapter, MatterController, MatterDeviceAdapter,
     MatterDeviceType, MatterTransport, MockDeviceAdapter, MockNorthbound, MockNorthboundState,
     MqttMessage, MqttTransport, NodeId, NorthboundAdapter, Polarity, SchedulerAdapter, SetValue,
-    ValueUpdate, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
+    ValueUpdate, VirtualDeviceAdapter, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
 };
 pub use compile::{
     build_engine, build_engine_at, build_engine_full, build_engine_with_waker,
@@ -68,6 +68,6 @@ pub use engine::{Engine, RetryPolicy};
 pub use ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
 pub use model::{CapabilityKind, CapabilityState, Command, Event, Millis, TimerKey};
 pub use observe::{NoopObserver, Observer, StderrObserver};
-pub use rule::{CmpOp, Condition, Rule, Trigger, Truth};
+pub use rule::{CmpOp, Condition, CrossDir, Rule, Trigger, Truth};
 pub use state::StateStore;
 pub use wake::{wake_channel, WakeListener, WakeReason, Waker};

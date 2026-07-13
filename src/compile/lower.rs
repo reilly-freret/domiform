@@ -21,14 +21,16 @@ use serde::de::DeserializeOwned;
 use serde_yaml::Value;
 
 use crate::compile::ast::{
-    RawDecreaseBrightness, RawIncreaseBrightness, RawOccupancyIs, RawScheduleTimer, RawSendIrCode,
-    RawSetBrightness, RawSetColor, RawSetColorTemperature, RawSwitchIs,
+    RawChanged, RawColorIs, RawCompare, RawCrosses, RawDecreaseBrightness, RawIncreaseBrightness,
+    RawOccupancyIs, RawReports, RawScheduleTimer, RawSendIrCode, RawSetBrightness, RawSetColor,
+    RawSetColorTemperature, RawSwitchIs,
 };
 use crate::compile::diagnostic::Diagnostic;
+use crate::compile::resolve::parse_capability;
 use crate::compile::resolve::DeviceDef;
 use crate::ids::{ActionId, DeviceId, SceneId, ScheduleId};
 use crate::model::{CapabilityKind, Command, Millis, TimerKey};
-use crate::rule::{CmpOp, Condition, Trigger};
+use crate::rule::{CmpOp, Condition, CrossDir, Trigger};
 
 /// Shared resolution context for one whole lowering phase (all scenes + rules).
 pub(crate) struct Lowerer<'a> {
@@ -149,6 +151,96 @@ impl Lowerer<'_> {
         }
     }
 
+    /// Map one of the six operator strings to a `CmpOp`. Anything else is a
+    /// compile error.
+    fn parse_cmp_op(&mut self, s: &str, at: &str) -> Option<CmpOp> {
+        Some(match s {
+            "<" => CmpOp::Lt,
+            "<=" => CmpOp::Le,
+            "==" => CmpOp::Eq,
+            "!=" => CmpOp::Ne,
+            ">=" => CmpOp::Ge,
+            ">" => CmpOp::Gt,
+            other => {
+                self.error(
+                    "E_BAD_OP",
+                    format!(
+                        "unknown comparison operator '{other}' (expected <, <=, ==, !=, >=, >)"
+                    ),
+                    at,
+                );
+                return None;
+            }
+        })
+    }
+
+    /// Resolve a capability name to its `CapabilityKind`, rejecting non-numeric
+    /// kinds — `compare` only makes sense against a numeric-shaped capability.
+    fn numeric_capability(&mut self, name: &str, at: &str) -> Option<CapabilityKind> {
+        match parse_capability(name) {
+            Some(kind) if kind.is_numeric() => Some(kind),
+            Some(_) => {
+                self.error(
+                    "E_NON_NUMERIC_CAPABILITY",
+                    format!(
+                        "'compare' needs a numeric capability, but '{name}' is not numeric-shaped"
+                    ),
+                    at,
+                );
+                None
+            }
+            None => {
+                self.error(
+                    "E_BAD_CAPABILITY",
+                    format!("unknown capability '{name}'"),
+                    at,
+                );
+                None
+            }
+        }
+    }
+
+    /// Resolve a capability name to its `CapabilityKind`, rejecting non-bool
+    /// kinds — `changed ... to: true/false` only makes sense for a bool-shaped
+    /// capability (occupancy, contact, water_leak, …).
+    fn bool_capability(&mut self, name: &str, at: &str) -> Option<CapabilityKind> {
+        match parse_capability(name) {
+            Some(kind) if kind.is_bool() => Some(kind),
+            Some(_) => {
+                self.error(
+                    "E_NON_BOOL_CAPABILITY",
+                    format!("'changed' needs a bool capability, but '{name}' is not bool-shaped"),
+                    at,
+                );
+                None
+            }
+            None => {
+                self.error(
+                    "E_BAD_CAPABILITY",
+                    format!("unknown capability '{name}'"),
+                    at,
+                );
+                None
+            }
+        }
+    }
+
+    /// Resolve a capability name for the level `reports` trigger — any real
+    /// (non-synthetic) capability the device can report.
+    fn any_capability(&mut self, name: &str, at: &str) -> Option<CapabilityKind> {
+        match parse_capability(name) {
+            Some(kind) => Some(kind),
+            None => {
+                self.error(
+                    "E_BAD_CAPABILITY",
+                    format!("unknown capability '{name}'"),
+                    at,
+                );
+                None
+            }
+        }
+    }
+
     // --- triggers -----------------------------------------------------------
 
     pub(crate) fn trigger(&mut self, v: &Value, at: &str) -> Option<Trigger> {
@@ -168,12 +260,55 @@ impl Lowerer<'_> {
                 let action = self.resolve_event(device, dev_name, event_name, at)?;
                 Trigger::Action { device, action }
             }
-            "occupancy" | "occupancy_clear" => {
-                let occupied = verb == "occupancy";
-                let name = self.as_name(&payload, &verb, at)?;
-                let device = self.resolve_device(&name, at)?;
-                self.require_cap(device, &name, CapabilityKind::Occupancy, &verb, at);
-                Trigger::Occupancy { device, occupied }
+            "changed" => {
+                let c: RawChanged = self.payload(payload, "changed", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                let kind = self.bool_capability(&c.capability, at)?;
+                self.require_cap(device, &c.device, kind, "changed", at);
+                Trigger::Changed {
+                    device,
+                    kind,
+                    to: c.to,
+                }
+            }
+            "crosses" => {
+                let c: RawCrosses = self.payload(payload, "crosses", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                let kind = self.numeric_capability(&c.capability, at)?;
+                self.require_cap(device, &c.device, kind, "crosses", at);
+                let (bound, dir) = match (c.above, c.below) {
+                    (Some(_), Some(_)) => {
+                        self.error(
+                            "E_BAD_CROSS",
+                            "'crosses' must set exactly one of `above` or `below`".into(),
+                            at,
+                        );
+                        return None;
+                    }
+                    (None, None) => {
+                        self.error(
+                            "E_BAD_CROSS",
+                            "'crosses' needs one of `above` or `below`".into(),
+                            at,
+                        );
+                        return None;
+                    }
+                    (Some(v), None) => (v, CrossDir::Above),
+                    (None, Some(v)) => (v, CrossDir::Below),
+                };
+                Trigger::Crosses {
+                    device,
+                    kind,
+                    bound,
+                    dir,
+                }
+            }
+            "reports" => {
+                let r: RawReports = self.payload(payload, "reports", at)?;
+                let device = self.resolve_device(&r.device, at)?;
+                let kind = self.any_capability(&r.capability, at)?;
+                self.require_cap(device, &r.device, kind, "reports", at);
+                Trigger::Reports { device, kind }
             }
             "timer" => {
                 let key = self.as_name(&payload, "timer", at)?;
@@ -279,6 +414,26 @@ impl Lowerer<'_> {
                     kind: CapabilityKind::Occupancy,
                     value: o.occupied,
                 }
+            }
+            "compare" => {
+                let c: RawCompare = self.payload(payload, "compare", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                let kind = self.numeric_capability(&c.capability, at)?;
+                let op = self.parse_cmp_op(&c.op, at)?;
+                self.require_cap(device, &c.device, kind, "compare", at);
+                Condition::Compare {
+                    device,
+                    kind,
+                    op,
+                    value: c.value,
+                }
+            }
+            "color_is" => {
+                let c: RawColorIs = self.payload(payload, "color_is", at)?;
+                let device = self.resolve_device(&c.device, at)?;
+                self.require_cap(device, &c.device, CapabilityKind::Color, "color_is", at);
+                let (r, g, b) = self.parse_color(&c.color, at)?;
+                Condition::ColorEquals { device, r, g, b }
             }
             "time_after" => {
                 let t = self.as_name(&payload, "time_after", at)?;
@@ -491,6 +646,27 @@ impl Lowerer<'_> {
                 return None;
             }
         })
+    }
+
+    /// Lower a rule's optional `for:` qualifier to a `Millis`, validating that
+    /// the trigger actually supports sustained duration (only the edge triggers
+    /// `changed` / `crosses` do — a `for` on `reports`/`timer`/`event`/… is a
+    /// static error, since there's no predicate to sustain).
+    pub(crate) fn for_duration(
+        &mut self,
+        raw: &str,
+        trigger: &Trigger,
+        at: &str,
+    ) -> Option<Millis> {
+        if trigger.watched().is_none() {
+            self.error(
+                "E_FOR_UNSUPPORTED",
+                "'for:' is only valid on an edge trigger (`changed` or `crosses`)".into(),
+                at,
+            );
+            return None;
+        }
+        self.parse_duration(raw, at)
     }
 
     // --- scalar parsing -----------------------------------------------------

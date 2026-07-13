@@ -12,6 +12,9 @@
 # Note: Apple Home often ignores bridged Matter device names and shows generic
 # labels ("Light", …) — that is a controller-side quirk, not a config bug. Run
 # it, then scan the pairing QR printed to the log into your Home app.
+# Note: color set *from* a controller works, but a color change made inside
+# domiform is not synced back to the controller (an rs-matter 0.2 limitation).
+# On/off and brightness sync both ways. See README "Known limitations".
 system:
   timezone: America/New_York
   latitude: 40.71

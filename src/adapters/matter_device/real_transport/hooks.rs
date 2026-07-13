@@ -130,7 +130,9 @@ impl DeviceHooks {
             // engine-side color change cannot be pushed into the node's attributes.
             // A controller still drives color fine (see `ColorFacet`); it just
             // reflects the last controller-set color, not a southbound one. Revisit
-            // when the crate adds an engine→handler color-sync path.
+            // when the crate adds an engine→handler color-sync path. Documented as a
+            // user-facing limitation in the README ("Known limitations of the Matter
+            // bridge") — keep the two in sync.
             CapabilityState::Color { .. } | CapabilityState::ColorTemperature(_) => {}
             _ => {}
         }

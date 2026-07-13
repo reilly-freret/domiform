@@ -10,7 +10,8 @@
 
 use domiform::ids::DeviceId;
 use domiform::{
-    Command, Condition, Engine, Event, MockDeviceAdapter, Rule, RuleId, TimerKey, Trigger,
+    CapabilityKind, CapabilityState, Command, Condition, Engine, Event, MockDeviceAdapter, Rule,
+    RuleId, TimerKey, Trigger,
 };
 
 const TEN_MIN: u64 = 10 * 60 * 1000;
@@ -28,9 +29,10 @@ fn build() -> (Engine, DeviceId) {
     // rule A
     engine.add_rule(Rule::new(
         RuleId(1),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: motion,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::Always,
         vec![
@@ -44,9 +46,10 @@ fn build() -> (Engine, DeviceId) {
     // rule B
     engine.add_rule(Rule::new(
         RuleId(2),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: motion,
-            occupied: false,
+            kind: CapabilityKind::Occupancy,
+            to: false,
         },
         Condition::Always,
         vec![Command::ScheduleTimer {
@@ -71,9 +74,9 @@ fn build() -> (Engine, DeviceId) {
 #[test]
 fn motion_turns_light_on() {
     let (mut engine, light) = build();
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
     assert_eq!(engine.switch_state(light), Some(true));
 }
@@ -83,20 +86,20 @@ fn re_trigger_cancels_pending_off() {
     let (mut engine, light) = build();
 
     // Motion, then clear: a 10-minute off-timer is now pending.
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: false,
+        state: CapabilityState::Occupancy(false),
     });
 
     // Five minutes later, motion again — this must CANCEL the pending timer.
     engine.advance(5 * 60 * 1000);
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
 
     // Advance well past the original 10-minute deadline. Because the timer was
@@ -113,13 +116,13 @@ fn re_trigger_cancels_pending_off() {
 fn timer_fires_when_not_re_triggered() {
     let (mut engine, light) = build();
 
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: DeviceId(1),
-        occupied: false,
+        state: CapabilityState::Occupancy(false),
     });
 
     // No further motion. Just before the deadline: still on.
