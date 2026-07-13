@@ -117,8 +117,8 @@
     },
 
     "capability": {
-      "enum": ["switch", "brightness", "color", "color_temperature", "occupancy", "battery", "ir_transmitter"],
-      "description": "Declared device capability. (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.) `color` and `color_temperature` are independent — declaring one does not imply the other. `ir_transmitter` is write-only (send IR codes; no readable state)."
+      "enum": ["switch", "brightness", "color", "color_temperature", "occupancy", "battery", "temperature", "humidity", "illuminance", "power", "contact", "water_leak", "smoke", "ir_transmitter"],
+      "description": "Declared device capability. Valued sensors are stored in canonical units: temperature in centidegrees Celsius, humidity in whole percent, illuminance in lux, power in watts. Bool sensors: contact (true = open), water_leak/smoke (true = detected). (`time_of_day`/`sun_up` are synthetic — the clock provides them; naming one on a device is an error.) `color` and `color_temperature` are independent — declaring one does not imply the other. `ir_transmitter` is write-only (send IR codes; no readable state)."
     },
 
     "device": {
@@ -160,6 +160,10 @@
       "properties": {
         "when": { "$ref": "#/$defs/trigger" },
         "if": { "$ref": "#/$defs/condition" },
+        "for": {
+          "$ref": "#/$defs/duration",
+          "description": "Sustained-duration qualifier: the edge trigger's predicate must hold continuously for this long before the commands fire (e.g. `5m`). Only valid on `changed` / `crosses` triggers. If the state reverts first, the pending fire is auto-cancelled."
+        },
         "then": {
           "type": "array",
           "items": { "$ref": "#/$defs/command" }
@@ -179,8 +183,39 @@
           "pattern": "^[^.]+\\.[^.]+$",
           "description": "`<device>.<event>`, where <event> is a key in that device's `events:` map."
         },
-        "occupancy": { "type": "string", "description": "Device became occupied." },
-        "occupancy_clear": { "type": "string", "description": "Device occupancy cleared." },
+        "changed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "capability", "to"],
+          "description": "Edge trigger: a bool-shaped capability changed *to* a value. Fires on the transition, not on repeated reports of the same value. (Occupancy rides this: `{ device, capability: occupancy, to: true }`.)",
+          "properties": {
+            "device": { "type": "string" },
+            "capability": { "type": "string" },
+            "to": { "type": "boolean" }
+          }
+        },
+        "crosses": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "capability"],
+          "description": "Edge trigger: a numeric-shaped capability crossed a threshold. Set exactly one of `above` / `below`.",
+          "properties": {
+            "device": { "type": "string" },
+            "capability": { "type": "string" },
+            "above": { "type": "integer" },
+            "below": { "type": "integer" }
+          }
+        },
+        "reports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "capability"],
+          "description": "Level trigger: fires on *every* report of a capability (opt-in; for metering/logging-style rules).",
+          "properties": {
+            "device": { "type": "string" },
+            "capability": { "type": "string" }
+          }
+        },
         "timer": { "type": "string", "description": "A relative timer with this key elapsed." },
         "schedule": { "type": "string", "description": "A wall-clock schedule (from `schedules:`) came due." },
         "command_failed": {
@@ -216,6 +251,28 @@
           "properties": {
             "device": { "type": "string" },
             "occupied": { "type": "boolean" }
+          }
+        },
+        "compare": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "capability", "op", "value"],
+          "description": "Compare a numeric-shaped capability against a constant (in canonical units).",
+          "properties": {
+            "device": { "type": "string" },
+            "capability": { "type": "string" },
+            "op": { "enum": ["<", "<=", "==", "!=", ">=", ">"] },
+            "value": { "type": "integer" }
+          }
+        },
+        "color_is": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["device", "color"],
+          "description": "Device's reported color equals an exact sRGB value.",
+          "properties": {
+            "device": { "type": "string" },
+            "color": { "$ref": "#/$defs/color" }
           }
         },
         "time_after": { "$ref": "#/$defs/timeOfDay" },
@@ -266,25 +323,7 @@
           "required": ["device", "color"],
           "properties": {
             "device": { "type": "string" },
-            "color": {
-              "description": "Chromatic color: `#RRGGBB` hex string or `{ r, g, b }` object (0–255 each).",
-              "oneOf": [
-                {
-                  "type": "string",
-                  "pattern": "^#[0-9A-Fa-f]{6}$"
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["r", "g", "b"],
-                  "properties": {
-                    "r": { "type": "integer", "minimum": 0, "maximum": 255 },
-                    "g": { "type": "integer", "minimum": 0, "maximum": 255 },
-                    "b": { "type": "integer", "minimum": 0, "maximum": 255 }
-                  }
-                }
-              ]
-            },
+            "color": { "$ref": "#/$defs/color" },
             "transition": { "$ref": "#/$defs/duration" }
           }
         },
@@ -339,6 +378,26 @@
       "type": "string",
       "pattern": "^[0-9]+(ms|s|m|h)$",
       "description": "e.g. 500ms, 30s, 10m, 1h."
+    },
+
+    "color": {
+      "description": "Chromatic color: `#RRGGBB` hex string or `{ r, g, b }` object (0–255 each).",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["r", "g", "b"],
+          "properties": {
+            "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        }
+      ]
     },
 
     "timeOfDay": {

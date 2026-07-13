@@ -3,7 +3,7 @@
 //! feel like a compiled program.
 
 use chrono::{TimeZone, Utc};
-use domiform::{build_engine, build_engine_at, compile_str, Event};
+use domiform::{build_engine, build_engine_at, compile_str, CapabilityState, Event};
 
 /// A fixed UTC-midnight boot epoch (equator/UTC config → sunrise ~06:00, sunset
 /// ~18:00), so `sun_up` advances are deterministic instead of tracking the wall
@@ -34,13 +34,13 @@ devices:
 
 rules:
   on_motion:
-    when: { occupancy: hallway_motion }
+    when: { changed: { device: hallway_motion, capability: occupancy, to: true } }
     if: { sun_up: false }
     then:
       - turn_on: hallway_light
       - cancel_timer: hallway_off
   arm_off:
-    when: { occupancy_clear: hallway_motion }
+    when: { changed: { device: hallway_motion, capability: occupancy, to: false } }
     then:
       - schedule_timer: { key: hallway_off, after: 10m }
   do_off:
@@ -67,23 +67,23 @@ fn full_automation_runs_from_yaml() {
     engine.start(); // boot at 00:00 → clock reports SunUp(false), i.e. dark
 
     // Motion while dark → light on (the `sun_up: false` guard passed).
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: motion,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
     assert_eq!(engine.switch_state(light), Some(true));
 
     // Motion clears → off-timer armed.
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: motion,
-        occupied: false,
+        state: CapabilityState::Occupancy(false),
     });
 
     // Re-trigger before the deadline cancels the timer; light stays on past it.
     engine.advance(5 * 60 * 1000);
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: motion,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
     engine.advance(TEN_MIN);
     assert_eq!(
@@ -93,9 +93,9 @@ fn full_automation_runs_from_yaml() {
     );
 
     // Clear again and let the timer run out → light off.
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: motion,
-        occupied: false,
+        state: CapabilityState::Occupancy(false),
     });
     engine.advance(TEN_MIN);
     assert_eq!(engine.switch_state(light), Some(false));
@@ -111,9 +111,9 @@ fn daylight_guard_suppresses_the_rule() {
     engine.start();
     engine.advance(12 * 60 * 60 * 1000); // noon → SunUp(true)
 
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: motion,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
     assert_ne!(
         engine.switch_state(light),
@@ -132,7 +132,7 @@ devices:
   lamp: { adapter: z, capabilities: [switch] }
 rules:
   oops:
-    when: { occupancy: lamp }          # lamp has no occupancy capability
+    when: { changed: { device: lamp, capability: occupancy, to: true } }  # lamp has no occupancy capability
     then:
       - set_brightness: { device: lamp, value: 50 }  # nor brightness
       - turn_on: ghost                 # unknown device

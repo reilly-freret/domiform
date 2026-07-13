@@ -68,6 +68,6 @@ pub use engine::{Engine, RetryPolicy};
 pub use ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
 pub use model::{CapabilityKind, CapabilityState, Command, Event, Millis, TimerKey};
 pub use observe::{NoopObserver, Observer, StderrObserver};
-pub use rule::{CmpOp, Condition, Rule, Trigger, Truth};
+pub use rule::{CmpOp, Condition, CrossDir, Rule, Trigger, Truth};
 pub use state::StateStore;
 pub use wake::{wake_channel, WakeListener, WakeReason, Waker};

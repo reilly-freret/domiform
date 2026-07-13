@@ -3,7 +3,7 @@
 //! the clock adapter, deterministically, on a fixed boot epoch.
 
 use chrono::{TimeZone, Utc};
-use domiform::{build_engine_at, compile_str, Event};
+use domiform::{build_engine_at, compile_str, CapabilityState, Event};
 
 /// Boot epoch for a given UTC wall-clock time, so schedule fires are replayable.
 fn epoch(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
@@ -145,9 +145,9 @@ fn time_reached_only_matches_schedule_triggers() {
     engine.start();
 
     // An unrelated occupancy event must not fire the schedule rule.
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: lamp,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
     assert_eq!(engine.switch_state(lamp), None);
 }

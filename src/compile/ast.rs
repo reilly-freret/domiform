@@ -165,6 +165,11 @@ pub struct RawRule {
     /// Optional guard. `if:` in YAML (renamed to dodge the Rust keyword).
     #[serde(default, rename = "if")]
     pub condition: Option<Value>,
+    /// Optional sustained-duration qualifier (feature E): the edge trigger's
+    /// predicate must hold continuously for this long (e.g. `5m`) before the
+    /// commands fire. Only valid on the edge triggers (`changed` / `crosses`).
+    #[serde(default, rename = "for")]
+    pub for_duration: Option<String>,
     #[serde(default)]
     pub then: Vec<Value>,
 }
@@ -186,6 +191,53 @@ pub struct RawSwitchIs {
 pub struct RawOccupancyIs {
     pub device: String,
     pub occupied: bool,
+}
+
+/// Payload for the `changed` trigger: a bool-shaped capability changing *to* a
+/// value (edge). Subsumes the old dedicated occupancy trigger.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawChanged {
+    pub device: String,
+    pub capability: String,
+    pub to: bool,
+}
+
+/// Payload for the `crosses` trigger: a numeric-shaped capability crossing a
+/// threshold (edge, directional). Exactly one of `above` / `below` is set —
+/// "exactly one" is checked in `lower` (serde can't express it here).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCrosses {
+    pub device: String,
+    pub capability: String,
+    #[serde(default)]
+    pub above: Option<i64>,
+    #[serde(default)]
+    pub below: Option<i64>,
+}
+
+/// Payload for the `reports` trigger: fire on *every* report of a capability
+/// (level, opt-in).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawReports {
+    pub device: String,
+    pub capability: String,
+}
+
+/// Payload for the general `compare` condition verb: compare a numeric-shaped
+/// capability against a constant. `op` is one of `<`, `<=`, `==`, `!=`, `>=`,
+/// `>` (see [`parse_cmp_op`](super::lower)); `capability` must name a
+/// numeric-shaped kind (a `compare` on `switch` is rejected — use the `switch`
+/// bool verb for that).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCompare {
+    pub device: String,
+    pub capability: String,
+    pub op: String,
+    pub value: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +274,16 @@ pub struct RawSetColor {
     pub color: Value,
     #[serde(default)]
     pub transition: Option<String>,
+}
+
+/// Payload for the `color_is` condition: does a device's reported color equal an
+/// exact sRGB value? `color` accepts the same `#RRGGBB` / `{ r, g, b }` forms as
+/// `set_color`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawColorIs {
+    pub device: String,
+    pub color: Value,
 }
 
 #[derive(Debug, Deserialize)]

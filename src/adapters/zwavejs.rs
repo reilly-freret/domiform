@@ -415,13 +415,13 @@ pub fn update_to_events(
         // Notification CC, Home Security: motion detection (7/8) → occupied,
         // idle (0) → clear. Other notification kinds (tamper, …) are ignored.
         (CC_NOTIFICATION, "Home Security") => match u.value.as_u64() {
-            Some(0) => Some(Event::OccupancyChanged {
+            Some(0) => Some(Event::StateReported {
                 device,
-                occupied: false,
+                state: CapabilityState::Occupancy(false),
             }),
-            Some(7) | Some(8) => Some(Event::OccupancyChanged {
+            Some(7) | Some(8) => Some(Event::StateReported {
                 device,
-                occupied: true,
+                state: CapabilityState::Occupancy(true),
             }),
             _ => None,
         },

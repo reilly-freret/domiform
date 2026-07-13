@@ -10,7 +10,8 @@ use std::rc::Rc;
 use domiform::ids::DeviceId;
 use domiform::model::{CapabilityState, Millis};
 use domiform::{
-    Adapter, Command, Condition, DispatchOutcome, Engine, Event, Rule, RuleId, Trigger,
+    Adapter, CapabilityKind, Command, Condition, DispatchOutcome, Engine, Event, Rule, RuleId,
+    Trigger,
 };
 
 const MOTION: DeviceId = DeviceId(0);
@@ -48,9 +49,10 @@ fn build() -> (Engine, Recorder) {
     engine.bind_device(LIGHT, idx);
     engine.add_rule(Rule::new(
         RuleId(0),
-        Trigger::Occupancy {
+        Trigger::Changed {
             device: MOTION,
-            occupied: true,
+            kind: CapabilityKind::Occupancy,
+            to: true,
         },
         Condition::Always,
         vec![Command::ToggleSwitch { device: LIGHT }],
@@ -66,9 +68,9 @@ fn toggle_with_known_on_state_dispatches_explicit_off() {
         state: CapabilityState::Switch(true),
     });
 
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: MOTION,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
 
     // The adapter saw an explicit SetSwitch(off), never a ToggleSwitch.
@@ -90,9 +92,9 @@ fn toggle_with_known_off_state_dispatches_explicit_on() {
         state: CapabilityState::Switch(false),
     });
 
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: MOTION,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
 
     assert_eq!(
@@ -113,18 +115,21 @@ fn repeated_toggles_alternate() {
         state: CapabilityState::Switch(false),
     });
 
-    engine.inject(Event::OccupancyChanged {
+    // Each occupancy edge (idle → occupied) toggles once; the sensor must return
+    // to idle between detections for the next report to be a fresh edge.
+    let occupied = Event::StateReported {
         device: MOTION,
-        occupied: true,
-    }); // -> on
-    engine.inject(Event::OccupancyChanged {
+        state: CapabilityState::Occupancy(true),
+    };
+    let idle = Event::StateReported {
         device: MOTION,
-        occupied: true,
-    }); // -> off
-    engine.inject(Event::OccupancyChanged {
-        device: MOTION,
-        occupied: true,
-    }); // -> on
+        state: CapabilityState::Occupancy(false),
+    };
+    engine.inject(occupied.clone()); // -> on
+    engine.inject(idle.clone());
+    engine.inject(occupied.clone()); // -> off
+    engine.inject(idle);
+    engine.inject(occupied); // -> on
 
     assert_eq!(
         recorder.commands(),
@@ -152,9 +157,9 @@ fn toggle_with_unknown_state_passes_raw_toggle_through() {
     // resolve a direction and hands the device the raw toggle to decide itself.
     let (mut engine, recorder) = build();
 
-    engine.inject(Event::OccupancyChanged {
+    engine.inject(Event::StateReported {
         device: MOTION,
-        occupied: true,
+        state: CapabilityState::Occupancy(true),
     });
 
     assert_eq!(

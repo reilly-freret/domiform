@@ -268,9 +268,9 @@ pub fn report_to_events(
             state: CapabilityState::ColorTemperature(mireds.min(u16::MAX as u64) as u16),
         }),
         // OccupancySensing, Occupancy (bit 0 = occupied).
-        (0x0406, 0x0000) => r.value.as_u64().map(|bits| Event::OccupancyChanged {
+        (0x0406, 0x0000) => r.value.as_u64().map(|bits| Event::StateReported {
             device,
-            occupied: bits & 1 == 1,
+            state: CapabilityState::Occupancy(bits & 1 == 1),
         }),
         // PowerSource, BatPercentRemaining (½-percent → percent).
         (0x002F, 0x000C) => r.value.as_u64().map(|half| Event::StateReported {

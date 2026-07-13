@@ -191,7 +191,7 @@ impl CompiledConfig {
 /// Map a capability string to its kind. Synthetic capabilities (`time_of_day`,
 /// `sun_up`) are deliberately absent: the clock adapter produces them, so naming
 /// one on a physical device is an error.
-fn parse_capability(s: &str) -> Option<CapabilityKind> {
+pub(crate) fn parse_capability(s: &str) -> Option<CapabilityKind> {
     Some(match s {
         "switch" => CapabilityKind::Switch,
         "brightness" => CapabilityKind::Brightness,
@@ -199,6 +199,13 @@ fn parse_capability(s: &str) -> Option<CapabilityKind> {
         "color_temperature" => CapabilityKind::ColorTemperature,
         "occupancy" => CapabilityKind::Occupancy,
         "battery" => CapabilityKind::Battery,
+        "temperature" => CapabilityKind::Temperature,
+        "humidity" => CapabilityKind::Humidity,
+        "illuminance" => CapabilityKind::Illuminance,
+        "power" => CapabilityKind::Power,
+        "contact" => CapabilityKind::Contact,
+        "water_leak" => CapabilityKind::WaterLeak,
+        "smoke" => CapabilityKind::Smoke,
         "ir_transmitter" => CapabilityKind::IrTransmitter,
         _ => return None,
     })
@@ -385,9 +392,17 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
             };
             let commands = lw.commands(&raw_rule.then, &at);
             if let (Some(trigger), Some(condition)) = (trigger, condition) {
+                // `for:` is validated against the (now-resolved) trigger — only
+                // edge triggers sustain a duration. A bad `for:` is a diagnostic;
+                // the rule still builds (with `None`) so other errors surface too.
+                let for_duration = raw_rule
+                    .for_duration
+                    .as_deref()
+                    .and_then(|raw| lw.for_duration(raw, &trigger, &at));
                 rules.push(
                     Rule::new(RuleId(i as u32), trigger, condition, commands)
-                        .with_name(name.clone()),
+                        .with_name(name.clone())
+                        .with_for_duration(for_duration),
                 );
             }
         }

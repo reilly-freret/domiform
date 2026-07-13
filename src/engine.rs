@@ -27,7 +27,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::adapters::{Adapter, DispatchOutcome, SchedulerAdapter};
-use crate::ids::{AdapterIdx, DeviceId, SceneId};
+use crate::ids::{AdapterIdx, DeviceId, RuleId, SceneId};
 use crate::model::{CapabilityState, Command, Event, Millis, TimerKey};
 use crate::observe::Observer;
 use crate::rule::Rule;
@@ -36,6 +36,10 @@ use crate::CapabilityKind;
 
 const SCHEDULER_IDX: AdapterIdx = 0;
 const RETRY_KEY_PREFIX: &str = "__retry:";
+/// Key namespace for engine-managed `for:` (sustained-edge) timers. Like
+/// `__retry:` keys, these are intercepted in `drain` before rule matching so
+/// they re-verify + fire rather than acting as user-visible timer triggers.
+const FOR_KEY_PREFIX: &str = "__for:";
 const DEFAULT_MAX_CASCADE_DEPTH: u32 = 32;
 
 /// How transient failures are retried. Backoff is exponential in the base delay.
@@ -67,6 +71,13 @@ impl RetryPolicy {
 struct PendingRetry {
     command: Command,
     attempt: u32,
+}
+
+/// A rule waiting out its `for:` duration. Keyed by `RuleId` in `pending_for`;
+/// holds the generated timer key so a state revert can cancel it and an elapse
+/// can identify which rule to re-verify and fire.
+struct PendingFor {
+    key: TimerKey,
 }
 
 /// Fan one observer notification out to every registered observer, in order.
@@ -104,6 +115,10 @@ pub struct Engine {
     retry: RetryPolicy,
     retries: HashMap<TimerKey, PendingRetry>,
     retry_counter: u64,
+    /// Live `for:` timers, keyed by rule so at most one is pending per rule (a
+    /// fresh edge restarts the wait) and a state revert can find + cancel it.
+    pending_for: HashMap<RuleId, PendingFor>,
+    for_counter: u64,
     max_cascade_depth: u32,
 }
 
@@ -130,6 +145,8 @@ impl Engine {
             retry: RetryPolicy::default(),
             retries: HashMap::new(),
             retry_counter: 0,
+            pending_for: HashMap::new(),
+            for_counter: 0,
             max_cascade_depth: DEFAULT_MAX_CASCADE_DEPTH,
         }
     }
@@ -287,6 +304,18 @@ impl Engine {
                 }
             }
 
+            // Intercept engine-managed `for:` timers, the same way: a sustained
+            // edge has waited out its duration. Re-verify the trigger's predicate
+            // still holds against the *current* store (belt-and-suspenders: state
+            // may have changed via a path that didn't cancel), then fire the
+            // rule's commands. Time-gated, so it starts a fresh causal chain.
+            if let Event::TimerElapsed { key } = &ev {
+                if key.0.starts_with(FOR_KEY_PREFIX) {
+                    self.fire_elapsed_for(key);
+                    continue;
+                }
+            }
+
             // A consumer-requested change (northbound inbound: a Matter controller
             // attribute write, a REST call, a web toggle) becomes the same command
             // a rule would emit and is dispatched one causal hop from the request.
@@ -302,16 +331,42 @@ impl Engine {
                 continue;
             }
 
+            // Capture the *prior* value of a reported capability before folding,
+            // so on-change (edge) triggers can see the transition. The store is
+            // about to be overwritten with the new value in `fold_state`, so this
+            // is the only moment the old value is available. Cheap: one clone of a
+            // small enum, only for `StateReported`.
+            let prior: Option<CapabilityState> = match &ev {
+                Event::StateReported { device, state } => {
+                    self.state.get(*device, state.kind()).cloned()
+                }
+                _ => None,
+            };
+
             self.fold_state(&ev);
+
+            // On any state report, auto-cancel a pending `for:` timer whose
+            // sustained predicate no longer holds (e.g. new motion arrived, so
+            // "motion clear for 5m" must not fire). Done against the freshly
+            // folded store, before matching, so a report that both cancels one
+            // rule's timer and (re)starts another's is handled in order.
+            if matches!(ev, Event::StateReported { .. }) {
+                self.cancel_reverted_for_timers();
+            }
 
             // Collect commands from every rule that matches. Distinct field
             // borrows (rules + state read-only, observer mutable) — fine for the
             // borrow checker. Evaluating the condition for *every* matched rule
             // (not short-circuiting on `is_true`) lets the observer report the
             // three-valued `Truth` — the key signal when a rule won't fire.
+            //
+            // A `for:`-qualified rule that fires does not dispatch immediately —
+            // it (re)starts a sustained timer; its commands run only if the
+            // predicate survives the duration (see `fire_elapsed_for`).
             let mut commands: Vec<Command> = Vec::new();
+            let mut arm_for: Vec<(RuleId, Millis)> = Vec::new();
             for rule in &self.rules {
-                if !rule.trigger.matches(&ev) {
+                if !rule.trigger.matches(&ev, prior.as_ref()) {
                     continue;
                 }
                 let truth = rule.condition.eval(&self.state);
@@ -320,8 +375,14 @@ impl Engine {
                     o.rule_considered(rule.id, truth, fired)
                 });
                 if fired {
-                    commands.extend(rule.commands.iter().cloned());
+                    match rule.for_duration {
+                        Some(d) => arm_for.push((rule.id, d)),
+                        None => commands.extend(rule.commands.iter().cloned()),
+                    }
                 }
+            }
+            for (rule, d) in arm_for {
+                self.arm_for_timer(rule, d);
             }
             for cmd in commands {
                 self.dispatch_at(cmd, 1, depth);
@@ -329,20 +390,79 @@ impl Engine {
         }
     }
 
+    /// (Re)start a rule's `for:` timer: cancel any timer already pending for this
+    /// rule (a fresh edge restarts the wait), then schedule a new one through the
+    /// scheduler adapter under a generated `__for:` key.
+    fn arm_for_timer(&mut self, rule: RuleId, after: Millis) {
+        if let Some(prev) = self.pending_for.remove(&rule) {
+            let _ = self.adapters[SCHEDULER_IDX]
+                .dispatch(&Command::CancelTimer { key: prev.key }, self.now);
+        }
+        self.for_counter += 1;
+        let key = TimerKey(format!("{FOR_KEY_PREFIX}{}", self.for_counter));
+        self.pending_for
+            .insert(rule, PendingFor { key: key.clone() });
+        let _ =
+            self.adapters[SCHEDULER_IDX].dispatch(&Command::ScheduleTimer { key, after }, self.now);
+    }
+
+    /// Cancel every pending `for:` timer whose trigger predicate no longer holds
+    /// against the current store. Called after each state fold — the auto-cancel
+    /// that makes "sustained" safe (state reverts → the pending fire is dropped).
+    fn cancel_reverted_for_timers(&mut self) {
+        let reverted: Vec<RuleId> = self
+            .pending_for
+            .keys()
+            .copied()
+            .filter(|rule| {
+                self.rules
+                    .iter()
+                    .find(|r| r.id == *rule)
+                    .map(|r| !r.trigger.predicate_holds(&self.state))
+                    .unwrap_or(true)
+            })
+            .collect();
+        for rule in reverted {
+            if let Some(pending) = self.pending_for.remove(&rule) {
+                let _ = self.adapters[SCHEDULER_IDX]
+                    .dispatch(&Command::CancelTimer { key: pending.key }, self.now);
+            }
+        }
+    }
+
+    /// A `for:` timer elapsed: re-verify the rule's predicate still holds, then
+    /// dispatch its commands. The timer fired means the duration passed without an
+    /// auto-cancel, but re-verifying keeps semantics honest against any state
+    /// change that slipped through.
+    fn fire_elapsed_for(&mut self, key: &TimerKey) {
+        // Find (and clear) the pending entry this key belongs to.
+        let Some(rule_id) = self
+            .pending_for
+            .iter()
+            .find(|(_, p)| &p.key == key)
+            .map(|(id, _)| *id)
+        else {
+            return; // stale timer (already cancelled/superseded)
+        };
+        self.pending_for.remove(&rule_id);
+
+        let Some(rule) = self.rules.iter().find(|r| r.id == rule_id) else {
+            return;
+        };
+        if rule.trigger.predicate_holds(&self.state) {
+            let commands = rule.commands.clone();
+            for cmd in commands {
+                self.dispatch_at(cmd, 1, 0);
+            }
+        }
+    }
+
     /// Fold device feedback / sensor reports into the disposable state store, and
     /// fan the change to observers *and* northbound adapters (the state mirror).
     fn fold_state(&mut self, ev: &Event) {
-        match ev {
-            Event::StateReported { device, state } => {
-                self.fan_state_folded(*device, state);
-                self.state.set(*device, state.clone());
-            }
-            Event::OccupancyChanged { device, occupied } => {
-                let state = CapabilityState::Occupancy(*occupied);
-                self.fan_state_folded(*device, &state);
-                self.state.set(*device, state);
-            }
-            _ => {}
+        if let Event::StateReported { device, state } = ev {
+            self.fan_state_folded(*device, state);
+            self.state.set(*device, state.clone());
         }
     }
 
@@ -444,7 +564,19 @@ impl Engine {
                 mireds,
                 transition: None,
             }),
-            S::Occupancy(_) | S::Battery(_) | S::TimeOfDay(_) | S::SunUp(_) => None,
+            // Read-only capabilities: a northbound write to a sensor has no
+            // command and is a harmless no-op (matches Battery/TimeOfDay).
+            S::Occupancy(_)
+            | S::Battery(_)
+            | S::Temperature(_)
+            | S::Humidity(_)
+            | S::Illuminance(_)
+            | S::Power(_)
+            | S::Contact(_)
+            | S::WaterLeak(_)
+            | S::Smoke(_)
+            | S::TimeOfDay(_)
+            | S::SunUp(_) => None,
         }
     }
 

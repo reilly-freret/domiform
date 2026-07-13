@@ -90,8 +90,20 @@ fn read_attr(cap: CapabilityKind, channel: LoadChannel) -> Option<String> {
         CapabilityKind::Brightness if channel.is_none() => Some("brightness".into()),
         CapabilityKind::Color if channel.is_none() => Some("color".into()),
         CapabilityKind::ColorTemperature if channel.is_none() => Some("color_temp".into()),
+        // Mains-powered meters answer a `/get` reliably, so prime them.
+        CapabilityKind::Power if channel.is_none() => Some("power".into()),
+        // Sleepy / report-on-schedule sensors don't answer a `/get` reliably
+        // (battery-powered environmental and contact sensors report on their own
+        // cadence), so priming them just produces broker-side warnings — leave
+        // them `None` until their first report.
         CapabilityKind::Occupancy
         | CapabilityKind::Battery
+        | CapabilityKind::Temperature
+        | CapabilityKind::Humidity
+        | CapabilityKind::Illuminance
+        | CapabilityKind::Contact
+        | CapabilityKind::WaterLeak
+        | CapabilityKind::Smoke
         | CapabilityKind::TimeOfDay
         | CapabilityKind::SunUp => None,
         _ => None,
@@ -389,12 +401,68 @@ fn json_to_device_events(
             });
         }
         if let Some(occupied) = json.get("occupancy").and_then(Value::as_bool) {
-            events.push(Event::OccupancyChanged { device, occupied });
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Occupancy(occupied),
+            });
         }
         if let Some(bat) = json.get("battery").and_then(Value::as_u64) {
             events.push(Event::StateReported {
                 device,
                 state: CapabilityState::Battery(bat.min(100) as u8),
+            });
+        }
+        // --- valued sensors (folded to canonical units) ---
+        if let Some(c) = json.get("temperature").and_then(Value::as_f64) {
+            // z2m reports °C as a float; canonical is centidegrees.
+            let centi = (c * 100.0).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Temperature(centi),
+            });
+        }
+        if let Some(h) = json.get("humidity").and_then(Value::as_f64) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Humidity(h.round().clamp(0.0, 100.0) as u8),
+            });
+        }
+        // z2m exposes lux as `illuminance_lux` (raw `illuminance` is a log-scaled
+        // device value); prefer the lux field.
+        if let Some(lux) = json
+            .get("illuminance_lux")
+            .or_else(|| json.get("illuminance"))
+            .and_then(Value::as_u64)
+        {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Illuminance(lux.min(u32::MAX as u64) as u32),
+            });
+        }
+        if let Some(p) = json.get("power").and_then(Value::as_f64) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Power(p.round().max(0.0).min(u32::MAX as f64) as u32),
+            });
+        }
+        // z2m `contact` is `true` when the sensor is *closed*; canonical
+        // `Contact(true)` means *open*, so invert.
+        if let Some(closed) = json.get("contact").and_then(Value::as_bool) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Contact(!closed),
+            });
+        }
+        if let Some(leak) = json.get("water_leak").and_then(Value::as_bool) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::WaterLeak(leak),
+            });
+        }
+        if let Some(smoke) = json.get("smoke").and_then(Value::as_bool) {
+            events.push(Event::StateReported {
+                device,
+                state: CapabilityState::Smoke(smoke),
             });
         }
     }

@@ -169,7 +169,9 @@ fn start_replays_existing_state_into_a_freshly_added_northbound_adapter() {
     // start() replays the store into the northbound adapter.
     engine.start();
 
-    assert_eq!(bridge.latest(LIGHT), Some(CapabilityState::Switch(true)));
+    // The store holds two capabilities for LIGHT (Switch + Brightness) and
+    // replays them in `StateStore::iter` (HashMap) order, which is deliberately
+    // unspecified — so assert *both* were mirrored, not which came last.
     let mut kinds: Vec<_> = bridge.mirrored().iter().map(|(_, s)| s.clone()).collect();
     kinds.sort_by_key(|s| format!("{s:?}"));
     assert!(kinds.contains(&CapabilityState::Switch(true)));

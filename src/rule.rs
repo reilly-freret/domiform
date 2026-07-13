@@ -8,20 +8,56 @@
 //! against a hand-built `StateStore` with no engine at all.
 
 use crate::ids::{ActionId, DeviceId, RuleId, ScheduleId};
-use crate::model::{CapabilityKind, Command, Event, TimerKey};
+use crate::model::{CapabilityKind, CapabilityState, Command, Event, Millis, TimerKey};
 use crate::state::StateStore;
+
+/// Direction of a numeric threshold crossing for a `Crosses` trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossDir {
+    /// Fire when the value moves from below the bound to at/above it.
+    Above,
+    /// Fire when the value moves from above the bound to at/below it.
+    Below,
+}
 
 /// What kind of event wakes this rule. Note `Timer` and `Time` make scheduler
 /// events first-class triggers — identical in shape to physical events.
+///
+/// The on-change family (`Changed`, `Crosses`, `Reports`) all match against the
+/// single `Event::StateReported` — occupancy, contact, temperature and every
+/// other stateful capability ride it, with no per-capability event type. Edge
+/// triggers (`Changed`, `Crosses`) need the *prior* stored value to detect a
+/// transition, so `matches` takes it as context (captured before the fold in the
+/// drain loop). A first-ever report (`prior == None`) that satisfies the
+/// predicate **counts as an edge** — "already hot at boot → turn on the fan".
 #[derive(Clone, Debug)]
 pub enum Trigger {
     Action {
         device: DeviceId,
         action: ActionId,
     },
-    Occupancy {
+    /// Edge trigger on a bool-shaped capability changing *to* `to` (occupancy,
+    /// contact, water-leak, …). Fires only on the transition into `to`, not on
+    /// repeated reports of the same value.
+    Changed {
         device: DeviceId,
-        occupied: bool,
+        kind: CapabilityKind,
+        to: bool,
+    },
+    /// Edge trigger on a numeric-shaped capability *crossing* `bound` in the
+    /// given direction. Fires once when the value moves from not-satisfying to
+    /// satisfying the threshold — the fan/climate case.
+    Crosses {
+        device: DeviceId,
+        kind: CapabilityKind,
+        bound: i64,
+        dir: CrossDir,
+    },
+    /// Level trigger: fires on *every* report of the capability, regardless of
+    /// whether the value changed. Opt-in (metering/logging-style rules).
+    Reports {
+        device: DeviceId,
+        kind: CapabilityKind,
     },
     Timer {
         key: TimerKey,
@@ -38,7 +74,11 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    pub fn matches(&self, ev: &Event) -> bool {
+    /// Whether `ev` fires this trigger. `prior` is the state store's value for the
+    /// reported `(device, capability)` *before* the event was folded — required by
+    /// the edge triggers (`Changed`/`Crosses`) to see the transition. It is
+    /// ignored by every other trigger.
+    pub fn matches(&self, ev: &Event, prior: Option<&CapabilityState>) -> bool {
         match (self, ev) {
             (
                 Trigger::Action { device, action },
@@ -47,13 +87,44 @@ impl Trigger {
                     action: a,
                 },
             ) => device == d && action == a,
+            (Trigger::Changed { device, kind, to }, Event::StateReported { device: d, state }) => {
+                device == d
+                    && state.kind() == *kind
+                    && state.as_bool() == Some(*to)
+                    // Edge: the prior value was not already `to` (a first-ever
+                    // report that satisfies the predicate counts as an edge).
+                    && prior.and_then(CapabilityState::as_bool) != Some(*to)
+            }
             (
-                Trigger::Occupancy { device, occupied },
-                Event::OccupancyChanged {
-                    device: d,
-                    occupied: o,
+                Trigger::Crosses {
+                    device,
+                    kind,
+                    bound,
+                    dir,
                 },
-            ) => device == d && occupied == o,
+                Event::StateReported { device: d, state },
+            ) => {
+                if device != d || state.kind() != *kind {
+                    return false;
+                }
+                let Some(new) = state.as_i64() else {
+                    return false;
+                };
+                let satisfied = |v: i64| match dir {
+                    CrossDir::Above => v >= *bound,
+                    CrossDir::Below => v <= *bound,
+                };
+                // Edge: now satisfies, but the prior value did not (a first-ever
+                // report that already satisfies counts as a crossing).
+                let prior_satisfied = prior
+                    .and_then(CapabilityState::as_i64)
+                    .map(satisfied)
+                    .unwrap_or(false);
+                satisfied(new) && !prior_satisfied
+            }
+            (Trigger::Reports { device, kind }, Event::StateReported { device: d, state }) => {
+                device == d && state.kind() == *kind
+            }
             (Trigger::Timer { key }, Event::TimerElapsed { key: k }) => key == k,
             (Trigger::Time { schedule }, Event::TimeReached { schedule: s }) => schedule == s,
             (Trigger::CommandFailed { device }, Event::CommandFailed { command, .. }) => {
@@ -62,6 +133,43 @@ impl Trigger {
                     Some(d) => command.target_device() == Some(*d),
                 }
             }
+            _ => false,
+        }
+    }
+
+    /// The `(device, capability)` an edge trigger watches, if any — the state a
+    /// `for`-qualified rule must keep an eye on to auto-cancel its pending timer.
+    /// Only the edge triggers (`Changed`, `Crosses`) support a `for` qualifier;
+    /// everything else returns `None`.
+    pub fn watched(&self) -> Option<(DeviceId, CapabilityKind)> {
+        match self {
+            Trigger::Changed { device, kind, .. } | Trigger::Crosses { device, kind, .. } => {
+                Some((*device, *kind))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the edge trigger's *predicate* currently holds against the store —
+    /// used by a `for`-qualified rule both to auto-cancel (predicate no longer
+    /// holds) and to re-verify on elapse (predicate still holds). Returns `false`
+    /// for non-edge triggers and for state that has never been reported (Unknown
+    /// does not sustain).
+    pub fn predicate_holds(&self, state: &StateStore) -> bool {
+        match self {
+            Trigger::Changed { device, kind, to } => state.bool_value(*device, *kind) == Some(*to),
+            Trigger::Crosses {
+                device,
+                kind,
+                bound,
+                dir,
+            } => match state.num_value(*device, *kind) {
+                Some(v) => match dir {
+                    CrossDir::Above => v >= *bound,
+                    CrossDir::Below => v <= *bound,
+                },
+                None => false,
+            },
             _ => false,
         }
     }
@@ -174,6 +282,17 @@ pub enum Condition {
         op: CmpOp,
         value: i64,
     },
+    /// Chromatic color equals an exact sRGB triple. Color is neither bool- nor
+    /// numeric-shaped, so it can't ride `BoolEquals`/`Compare`; this leaf reads
+    /// the stored `CapabilityState::Color` directly. Exact equality only —
+    /// devices may round-trip color through HSV/XY and report a near-miss, so a
+    /// `tolerance` field is a possible future addition, deliberately omitted here.
+    ColorEquals {
+        device: DeviceId,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
 }
 
 impl Condition {
@@ -200,6 +319,16 @@ impl Condition {
                 Some(actual) => Truth::from_bool(op.test(actual, *value)),
                 None => Truth::Unknown,
             },
+            Condition::ColorEquals { device, r, g, b } => {
+                match state.get(*device, CapabilityKind::Color) {
+                    Some(CapabilityState::Color {
+                        r: cr,
+                        g: cg,
+                        b: cb,
+                    }) => Truth::from_bool(cr == r && cg == g && cb == b),
+                    _ => Truth::Unknown,
+                }
+            }
         }
     }
 }
@@ -214,6 +343,13 @@ pub struct Rule {
     pub trigger: Trigger,
     pub condition: Condition,
     pub commands: Vec<Command>,
+    /// Optional `for:` qualifier (feature E). When set, the rule's commands fire
+    /// only if the edge trigger's predicate has held *continuously* for this many
+    /// milliseconds: on the edge the engine schedules a timer; if the state
+    /// reverts before it elapses, the timer is auto-cancelled; on elapse the
+    /// predicate is re-verified before firing. All timing rides the scheduler
+    /// adapter (virtual time), so it stays deterministic and replayable.
+    pub for_duration: Option<Millis>,
 }
 
 impl Rule {
@@ -224,12 +360,19 @@ impl Rule {
             trigger,
             condition,
             commands,
+            for_duration: None,
         }
     }
 
     /// Attach the config name (used by the compiler; see `resolve`).
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
+        self
+    }
+
+    /// Attach a `for:` sustained-duration qualifier (feature E).
+    pub fn with_for_duration(mut self, for_duration: Option<Millis>) -> Self {
+        self.for_duration = for_duration;
         self
     }
 }
