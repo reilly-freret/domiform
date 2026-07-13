@@ -16,12 +16,11 @@ run = [
 [tasks.assert-git-clean]
 run = [
   # https://stackoverflow.com/a/2659808 
-  # return 1 iff staged-but-uncommitted changes
-  "git diff-index --quiet --cached HEAD --",
+  'git diff-index --quiet --cached HEAD -- || (echo "staged-but-uncommitted changes" && exit 1)',
   # return 1 iff unstaged changes
-  "git diff-files --quiet",
+  'git diff-files --quiet || (echo "unstaged changes" && exit 1)',
   # return 1 iff untracked-and-unignored changes
-  "test -z $(git ls-files --exclude-standard --others)",
+  'test -z $(git ls-files --exclude-standard --others) || (echo "untracked changes" && exit 1)',
 ]
 
 [tasks.build-docker]
@@ -29,8 +28,7 @@ depends = ["assert-git-clean"]
 run = '''
   GIT_REVISION_SHA_SHORT=$(git rev-parse --short HEAD)
   GIT_BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
-  DOCKER_TAG='${GIT_BRANCH_NAME}-${GIT_REVISION_SHA_SHORT}'
-  # "docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_PREFIX}:${DOCKER_TAG} --push ." 
-  echo ${DOCKER_PREFIX}:${DOCKER_TAG}
+  DOCKER_TAG="${GIT_BRANCH_NAME}-${GIT_REVISION_SHA_SHORT}"
+  docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_PREFIX}:${DOCKER_TAG} --push . 
 '''
 alias = "bd"
