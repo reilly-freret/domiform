@@ -21,7 +21,7 @@ run = [
   # return 1 iff unstaged changes
   "git diff-files --quiet",
   # return 1 iff untracked-and-unignored changes
-  "test -z $(git ls-files --others)",
+  "test -z $(git ls-files --exclude-standard --others)",
 ]
 
 [tasks.build-docker]
