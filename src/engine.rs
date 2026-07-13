@@ -325,8 +325,25 @@ impl Engine {
             // desired state (battery, time) yields no command and is a harmless
             // no-op.
             if let Event::RequestedChange { device, desired } = &ev {
-                if let Some(cmd) = Self::command_for_requested_change(*device, desired) {
+                let (device, desired) = (*device, desired.clone());
+                if let Some(cmd) = Self::command_for_requested_change(device, &desired) {
                     self.dispatch_at(cmd, 1, depth);
+                }
+                // Reconcile the northbound projection with engine truth. A
+                // northbound adapter (e.g. the Matter node) optimistically flips
+                // its own attribute cell on the controller write *before* the
+                // device confirms — it must, since some protocols read that cell
+                // back mid-command (rs-matter's OnOff↔Level coupling). If the
+                // device accepts, its echo folds the true value and corrects the
+                // cell anyway; but if the command failed (`dispatch` returned
+                // `Permanent`) or the device never echoes, the optimistic cell
+                // would keep asserting a value reality never took. So re-fan the
+                // store's *current* value for this capability to the northbound
+                // adapters: their mirror snaps back to truth one hop after any
+                // write. When the write is accepted and the echo later arrives,
+                // `fold_state` fans the same (settled) value again — a no-op.
+                if let Some(state) = self.state.get(device, desired.kind()).cloned() {
+                    self.fan_state_folded(device, &state);
                 }
                 continue;
             }

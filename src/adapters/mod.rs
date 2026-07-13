@@ -34,6 +34,7 @@ mod mock;
 pub mod mock_northbound;
 mod plugin;
 mod scheduler;
+mod virtual_device;
 pub mod zigbee2mqtt;
 pub mod zwavejs;
 
@@ -48,6 +49,7 @@ pub use mock_northbound::{MockNorthbound, MockNorthboundState};
 pub use plugin::{config_of, AdapterPlugin, ExposeSpec, NorthboundCtx, Polarity};
 // `NorthboundAdapter` is defined below (needs `Adapter` + `Observer` in scope).
 pub use scheduler::SchedulerAdapter;
+pub use virtual_device::VirtualDeviceAdapter;
 pub use zigbee2mqtt::{MqttMessage, MqttTransport, Zigbee2MqttAdapter};
 pub use zwavejs::{DeviceKind, SetValue, ValueUpdate, ZwaveAdapter, ZwaveClient};
 
@@ -62,6 +64,7 @@ static PLUGINS: &[&dyn AdapterPlugin] = &[
     &matter_device::PLUGIN,
     &mock::PLUGIN,
     &mock_northbound::PLUGIN,
+    &virtual_device::PLUGIN,
 ];
 
 /// The registered protocol adapters. Append a new adapter's `PLUGIN` to this

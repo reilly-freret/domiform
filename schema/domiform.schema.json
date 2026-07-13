@@ -112,6 +112,12 @@
           "properties": {
             "type": { "const": "mock" }
           }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "virtual", "description": "Domiform-owned stateful devices with no physical backing (e.g. a switch fronting an IR-only appliance). Echoes commanded state back as truth; behavior lives in rules. Takes no config or addresses." }
+          }
         }
       ]
     },

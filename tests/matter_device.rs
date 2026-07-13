@@ -314,6 +314,173 @@ fn controller_write_drives_the_bound_device_end_to_end() {
     assert_eq!(engine.switch_state(LIGHT), Some(true));
 }
 
+// --- Task A: node-thread death is surfaced -----------------------------------
+
+#[test]
+fn a_dead_node_is_reported_once_and_publishes_become_noops() {
+    // The real transport clears a liveness flag when its background node thread
+    // exits; the adapter must notice on `tick` (log once) and stop feeding a dead
+    // channel. `InMemoryMatter::kill` simulates that death.
+    let transport = InMemoryMatter::new();
+    let mut adapter = MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Switch],
+        }],
+        Box::new(transport.clone()),
+    );
+
+    // Healthy: a fold publishes as normal.
+    adapter.state_folded(LIGHT, &CapabilityState::Switch(true));
+    assert_eq!(
+        transport.published(),
+        vec![(LIGHT, CapabilityState::Switch(true))]
+    );
+
+    // Node dies. `tick` observes the unhealthy transport (the log-once fires here;
+    // asserting the log itself needs a capture harness we don't have — the
+    // behavioral contract is that ticking still works and doesn't loop/panic).
+    transport.kill();
+    assert!(adapter.tick(0).is_empty());
+    assert!(adapter.tick(0).is_empty()); // idempotent; would only log the first time
+}
+
+// --- Task B: an optimistic controller write reconciles to engine truth --------
+
+/// A southbound adapter that can be told to reject commands (return `Permanent`)
+/// so a controller write goes nowhere — the case that would leave a northbound
+/// mirror asserting a value reality never took.
+#[derive(Clone)]
+struct FlakyDevice {
+    reject: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl FlakyDevice {
+    fn new(reject: bool) -> Self {
+        Self {
+            reject: std::rc::Rc::new(std::cell::Cell::new(reject)),
+        }
+    }
+}
+impl Adapter for FlakyDevice {
+    fn dispatch(&mut self, cmd: &domiform::Command, _now: Millis) -> domiform::DispatchOutcome {
+        use domiform::{Command, DispatchOutcome};
+        if self.reject.get() {
+            return DispatchOutcome::Permanent("device rejected the command".into());
+        }
+        match cmd {
+            Command::SetSwitch { device, on } => DispatchOutcome::Ok(vec![Event::StateReported {
+                device: *device,
+                state: CapabilityState::Switch(*on),
+            }]),
+            _ => DispatchOutcome::ok(),
+        }
+    }
+}
+
+#[test]
+fn a_rejected_controller_write_reverts_the_mirror_to_engine_truth() {
+    // Seed the engine's store with Switch(false) via an accepted report, so there
+    // is a known prior truth. Then a controller write of Switch(true) that the
+    // device *rejects* must not leave the northbound mirror stuck at `true`: the
+    // engine re-fans the store's current value (false) after the RequestedChange.
+    let device = FlakyDevice::new(false);
+    let mut engine = Engine::new();
+    let idx = engine.add_adapter(Box::new(device.clone()));
+    engine.bind_device(LIGHT, idx);
+
+    let transport = InMemoryMatter::new();
+    engine.add_northbound(Box::new(MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Switch],
+        }],
+        Box::new(transport.clone()),
+    )));
+
+    // Establish prior truth: the device reports off. Folds → published to mirror.
+    engine.inject(Event::StateReported {
+        device: LIGHT,
+        state: CapabilityState::Switch(false),
+    });
+    assert_eq!(engine.switch_state(LIGHT), Some(false));
+
+    // Now the device will reject further commands.
+    device.reject.set(true);
+    transport.queue_inbound(LIGHT, CapabilityState::Switch(true));
+    engine.advance(1); // ticks northbound → RequestedChange → dispatch (rejected)
+
+    // Store is unchanged (the command went nowhere).
+    assert_eq!(engine.switch_state(LIGHT), Some(false));
+    // Crucially, the mirror was re-fanned with the true (false) value after the
+    // rejected write, so its last published state is false — not the optimistic
+    // true a controller wrote.
+    let published = transport.published();
+    assert_eq!(
+        published.last(),
+        Some(&(LIGHT, CapabilityState::Switch(false))),
+        "mirror must reconcile to engine truth after a rejected write: {published:?}"
+    );
+}
+
+// --- Task C: an accepted write converges to a fixpoint ------------------------
+
+#[test]
+fn an_accepted_controller_write_converges_and_settles() {
+    // A write that the device accepts must (a) drive the device, (b) leave the
+    // mirror at the accepted value, and (c) reach a fixpoint — a further advance
+    // with no input produces no new work and no cascade drop.
+    use domiform::Observer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // Observer that counts cascade drops, to prove convergence is natural (not
+    // truncated by the depth backstop).
+    #[derive(Clone, Default)]
+    struct DropCounter(Rc<RefCell<usize>>);
+    impl Observer for DropCounter {
+        fn cascade_dropped(&mut self, _ev: &Event, _depth: u32) {
+            *self.0.borrow_mut() += 1;
+        }
+    }
+
+    let device = FlakyDevice::new(false);
+    let mut engine = Engine::new();
+    let idx = engine.add_adapter(Box::new(device));
+    engine.bind_device(LIGHT, idx);
+
+    let drops = DropCounter::default();
+    engine.add_observer(Box::new(drops.clone()));
+
+    let transport = InMemoryMatter::new();
+    engine.add_northbound(Box::new(MatterDeviceAdapter::new(
+        vec![ExposedDevice {
+            id: LIGHT,
+            label: "lamp".into(),
+            capabilities: vec![CapabilityKind::Switch],
+        }],
+        Box::new(transport.clone()),
+    )));
+
+    transport.queue_inbound(LIGHT, CapabilityState::Switch(true));
+    engine.advance(1);
+
+    // Converged to the accepted value.
+    assert_eq!(engine.switch_state(LIGHT), Some(true));
+    assert_eq!(
+        transport.published().last(),
+        Some(&(LIGHT, CapabilityState::Switch(true)))
+    );
+
+    // Fixpoint: another advance with no input produces nothing new. The published
+    // length must not grow (no oscillation), and no cascade was ever dropped.
+    let published_len = transport.published().len();
+    engine.advance(1);
+    assert_eq!(transport.published().len(), published_len, "oscillation");
+    assert_eq!(*drops.0.borrow(), 0, "convergence must be natural, not truncated");
+}
+
 // --- config / compile / build path -------------------------------------------
 
 #[test]

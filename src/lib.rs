@@ -58,7 +58,7 @@ pub use adapters::{
     ExposedDevice, InMemoryMatter, MatterAdapter, MatterController, MatterDeviceAdapter,
     MatterDeviceType, MatterTransport, MockDeviceAdapter, MockNorthbound, MockNorthboundState,
     MqttMessage, MqttTransport, NodeId, NorthboundAdapter, Polarity, SchedulerAdapter, SetValue,
-    ValueUpdate, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
+    ValueUpdate, VirtualDeviceAdapter, Zigbee2MqttAdapter, ZwaveAdapter, ZwaveClient,
 };
 pub use compile::{
     build_engine, build_engine_at, build_engine_full, build_engine_with_waker,

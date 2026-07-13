@@ -40,7 +40,9 @@
 use core::pin::pin;
 use std::net::UdpSocket;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use embassy_futures::select::{select, select4};
 
@@ -113,18 +115,31 @@ type Msg = (DeviceId, CapabilityState);
 struct ChannelTransport {
     to_node: Sender<Msg>,
     from_node: Receiver<Msg>,
+    /// Cleared by the node thread when [`run_node`] returns or panics (see
+    /// [`AliveGuard`]). Once `false` the node is gone and this handle is inert.
+    alive: Arc<AtomicBool>,
 }
 
 impl MatterTransport for ChannelTransport {
     fn publish(&mut self, device: DeviceId, state: &CapabilityState) {
+        // Skip the clone/send once the node is dead: the `Receiver` is dropped,
+        // so the send would fail anyway, and there's no point queueing work no one
+        // will ever drain.
+        if !self.alive.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = self.to_node.send((device, state.clone()));
     }
     fn poll(&mut self) -> Vec<Msg> {
         self.from_node.try_iter().collect()
     }
+    fn is_healthy(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
 }
 
-/// A transport that does nothing — used when no device is exposed.
+/// A transport that does nothing — used when no device is exposed. Always
+/// "healthy": there is no node thread that could die.
 struct NoopTransport;
 impl MatterTransport for NoopTransport {
     fn publish(&mut self, _d: DeviceId, _s: &CapabilityState) {}
@@ -133,8 +148,23 @@ impl MatterTransport for NoopTransport {
     }
 }
 
+/// Clears the shared `alive` flag on drop — so the node thread reports "dead"
+/// whether [`run_node`] returns an error *or* unwinds from a panic (its `Drop`
+/// runs during unwind). Held for the lifetime of the thread's closure.
+struct AliveGuard(Arc<AtomicBool>);
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
 /// Spawn the Matter node thread and return a channel transport wired to it. An
 /// empty exposed set yields a no-op transport (nothing to announce).
+///
+// TODO(reliability): auto-restart the node thread on death rather than only
+// reporting it (see `plans/design/matter-device-reliability.md`, Task A "out of
+// scope"). Restart must reopen the fabric store, re-announce mDNS, and re-open a
+// commissioning window — non-trivial, hence deferred.
 pub fn connect(
     exposed: &[ExposedDevice],
     state_dir: &Path,
@@ -150,16 +180,26 @@ pub fn connect(
     let (node_tx, from_node) = channel::<Msg>();
     let state_dir = state_dir.to_path_buf();
 
+    // Liveness: the thread clears this via `AliveGuard::drop` on any exit (error
+    // return *or* panic-unwind). The engine-side handle reads it in `is_healthy`.
+    let alive = Arc::new(AtomicBool::new(true));
+    let thread_alive = alive.clone();
+
     std::thread::Builder::new()
         .name("matter-device".into())
         .spawn(move || {
+            let _guard = AliveGuard(thread_alive);
             if let Err(e) = run_node(&devices, &state_dir, interface, node_rx, node_tx, waker) {
                 log::error!("[matter_device] node stopped: {e:?}");
             }
         })
         .expect("spawn matter-device thread");
 
-    Box::new(ChannelTransport { to_node, from_node })
+    Box::new(ChannelTransport {
+        to_node,
+        from_node,
+        alive,
+    })
 }
 
 /// The bridged-endpoint shape for a device, from its exposable capabilities.

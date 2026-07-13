@@ -58,6 +58,15 @@ pub trait MatterTransport {
     /// Every controller-originated attribute write since the last call, already
     /// translated to canonical `(device, desired state)` pairs (non-blocking).
     fn poll(&mut self) -> Vec<(DeviceId, CapabilityState)>;
+
+    /// Whether the underlying node is still running. The real transport owns a
+    /// background thread that can die (fatal `rs-matter` error or panic); when it
+    /// does, the bridge is offline until domiform restarts and the adapter must be
+    /// able to say so. Transports with no such thread (in-memory, no-op) are always
+    /// healthy — hence the default.
+    fn is_healthy(&self) -> bool {
+        true
+    }
 }
 
 /// One domiform device projected as a Matter endpoint: which capabilities it
@@ -134,11 +143,18 @@ pub struct MatterDeviceAdapter {
     /// the real transport; kept here so the mapping is deterministic).
     exposed: Vec<ExposedDevice>,
     transport: Box<dyn MatterTransport>,
+    /// Set once the transport first reports unhealthy, so the "node died" error is
+    /// logged exactly once rather than on every tick.
+    degraded: bool,
 }
 
 impl MatterDeviceAdapter {
     pub fn new(exposed: Vec<ExposedDevice>, transport: Box<dyn MatterTransport>) -> Self {
-        MatterDeviceAdapter { exposed, transport }
+        MatterDeviceAdapter {
+            exposed,
+            transport,
+            degraded: false,
+        }
     }
 
     /// The devices this adapter projects (test/introspection aid).
@@ -155,8 +171,18 @@ impl Adapter for MatterDeviceAdapter {
         )
     }
 
-    /// Drain controller-originated attribute writes into `RequestedChange`s.
+    /// Drain controller-originated attribute writes into `RequestedChange`s, and
+    /// surface node-thread death once (a fatal `rs-matter` error or panic kills the
+    /// background node; the engine keeps ticking us regardless).
     fn tick(&mut self, _now: Millis) -> Vec<Event> {
+        if !self.degraded && !self.transport.is_healthy() {
+            self.degraded = true;
+            log::error!(
+                "[matter_device] the Matter node thread has exited; the bridge is \
+                 OFFLINE (no controller writes or state updates will flow) until \
+                 domiform is restarted"
+            );
+        }
         self.transport
             .poll()
             .into_iter()
@@ -179,13 +205,25 @@ impl Observer for MatterDeviceAdapter {
 
 /// The inspectable inner state of an [`InMemoryMatter`], shared between the
 /// transport the adapter owns and a handle a test holds.
-#[derive(Default)]
 pub struct InMemoryMatterState {
     /// Every `(device, state)` the adapter mirrored outward (already filtered to
     /// exposable capabilities, as a real node would).
     pub published: Vec<(DeviceId, CapabilityState)>,
     /// Controller writes queued by a test, drained on `poll` (FIFO).
     pub inbound: Vec<(DeviceId, CapabilityState)>,
+    /// Node health, mirroring the real transport's liveness flag. Starts healthy;
+    /// a test flips it via [`InMemoryMatter::kill`] to exercise the death path.
+    pub healthy: bool,
+}
+
+impl Default for InMemoryMatterState {
+    fn default() -> Self {
+        Self {
+            published: Vec::new(),
+            inbound: Vec::new(),
+            healthy: true,
+        }
+    }
 }
 
 /// An in-memory [`MatterTransport`] for tests: records published state and lets a
@@ -213,6 +251,12 @@ impl InMemoryMatter {
     pub fn queue_inbound(&self, device: DeviceId, desired: CapabilityState) {
         self.0.borrow_mut().inbound.push((device, desired));
     }
+
+    /// Simulate the node thread dying, so a subsequent `is_healthy` reports
+    /// unhealthy (as the real transport does when `run_node` exits).
+    pub fn kill(&self) {
+        self.0.borrow_mut().healthy = false;
+    }
 }
 
 impl MatterTransport for InMemoryMatter {
@@ -226,6 +270,10 @@ impl MatterTransport for InMemoryMatter {
 
     fn poll(&mut self) -> Vec<(DeviceId, CapabilityState)> {
         std::mem::take(&mut self.0.borrow_mut().inbound)
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.0.borrow().healthy
     }
 }
 
