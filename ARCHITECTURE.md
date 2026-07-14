@@ -33,7 +33,7 @@ switch on?" — `BoolEquals { device: sun, kind: SunUp, value: false }`.
 ## Layer map (the whole arc in five lines)
 
 | Layer | Files | Role |
-|---|---|---|
+| --- | --- | --- |
 | Host | `src/main.rs`, `src/wake.rs` | Owns wall-clock time + the real-time pump. The **only** impure, thread-aware part. Feeds the engine pure time-deltas. |
 | Compiler | `src/compile/` | Frontloads YAML into a stable, id-interned object graph, then never speaks again. Protocol-agnostic via a plugin registry. |
 | Engine | `src/engine.rs` | Single-threaded, FIFO, run-to-quiescence state machine. Loop-proofed by causal depth; retries are ordinary future timers. |
@@ -76,6 +76,7 @@ the entire mechanism behind "the engine stays agreement-free of wall time." Swap
 is exactly what tests do.
 
 **Two clocks, kept separate:**
+
 - `Instant::now()` — monotonic, host-only, used solely to measure *deltas*. Never
   stored in the engine.
 - `boot_epoch_ms` — wall-clock Unix time, captured **once** at startup and handed
@@ -111,7 +112,7 @@ dropped listener), not an oversight.
 
 A real three-phase compiler pipeline:
 
-```
+```text
 YAML ──parse──▶ AST ──resolve──▶ CompiledConfig ──build_engine──▶ Engine
       (ast)          (resolve)                     (adapters via plugin registry)
 ```
@@ -227,6 +228,7 @@ vtable translates to/from protocols, so the core stays protocol-ignorant.
 
 **Three (and only three) ways to drive it**, each ending in `drain()` (run to
 quiescence — the queue is always empty when the call returns):
+
 - `start()` — boot: tick every adapter once (so the clock's initial snapshot lands
   before any event), drain, replay startup state into northbound adapters.
 - `inject(event)` — "an adapter reported something": push at depth 0, drain.
@@ -332,6 +334,7 @@ state → `Not(false)` → `true` → **your outdoor light fires in daylight** a
 So "never heard about this" is a first-class value: the store distinguishes
 `Some(false)` from `None` (`state.rs`), a leaf reading `None` yields
 `Truth::Unknown`, and `Unknown` **propagates** through the operators (`rule.rs`):
+
 - `Not(Unknown) = Unknown` — the daylight bug is structurally impossible.
 - `False AND Unknown = False`, `True OR Unknown = True` — classical logic still
   applies where a definite value settles the result (mirrors SQL `NULL`).
@@ -379,6 +382,7 @@ transport, below this seam.
 
 **The `Adapter` impl is pull-based** (the concrete realization of the Stop-3
 threading model):
+
 - `dispatch(cmd)` — translate via the pure `command_to_publish`, `transport.publish`,
   map the result to a `DispatchOutcome` (`Ok`→`ok()`, `Err`→`Transient`; unknown
   device / unsupported command → `Permanent`). The adapter makes *no* retry
@@ -407,6 +411,7 @@ thread::spawn(move || {
 ```
 
 Inbound lifecycle, every hand-off:
+
 1. **Background thread** blocks on the socket; on a publish it does exactly two
    things — buffer the raw `MqttMessage` into an `mpsc::channel` (the *data* path)
    and call `waker.wake()` (the *signal* path). It never sees an `Event` or the
@@ -446,6 +451,7 @@ northbound bridge) is a variation on this template.
 ## Polarity: southbound vs northbound
 
 Adapters carry a `Polarity` (`adapters/plugin.rs`):
+
 - **Southbound** (default; zigbee2mqtt, matter, zwavejs) — domiform is the
   controller; owns/commands the devices *bound* to it. Gets an engine dispatch slot.
 - **Northbound** (`matter_device`, later REST/web/voice) — domiform is the source of

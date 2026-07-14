@@ -18,7 +18,13 @@ fn a_virtual_device_echoes_commanded_state_as_a_report() {
     let mut adapter = VirtualDeviceAdapter;
 
     // Set switch on → it reports Switch(true) (the store will fold this as truth).
-    let out = adapter.dispatch(&Command::SetSwitch { device: AC, on: true }, 0 as Millis);
+    let out = adapter.dispatch(
+        &Command::SetSwitch {
+            device: AC,
+            on: true,
+        },
+        0 as Millis,
+    );
     assert!(matches!(
         out,
         DispatchOutcome::Ok(events)

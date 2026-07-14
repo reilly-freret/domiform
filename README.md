@@ -15,7 +15,7 @@ relationships between them.
 Domiform is a single binary that builds and runs a graph that represents your
 smart home. If you have a lightbulb that runs on the [zigbee](https://en.wikipedia.org/wiki/Zigbee)
 protocol and a mains-powered scene controller that runs on [z-wave](https://en.wikipedia.org/wiki/Z-Wave),
-you might write this config file:
+you might write this [config file](./schema/domiform.schema.json):
 
 ```yaml
 # ./config.yaml
@@ -38,7 +38,7 @@ devices:
     events:
       scene_1_pressed: 1:KeyPressed
 rules:
-  toggle_my_lamp:
+  turn_my_lamp_on_or_off:
     when: my_scene_controller.scene_1_pressed
     then: 
       - toggle: my_lamp
@@ -57,154 +57,161 @@ Domiform is not a drop-in replacement for any of the (excellent) smart-home orch
 It will never:
 
 - require you to interact with a GUI
-- store or modify its core configuration via opaque registries
+- store or modify its core configuration in runtime registries
 - depend on proprietary hardware or software
+
+Additionally, Domiform itself is **not** a bridge or gateway between your server and end-devices.
+See [dependencies](#dependencies) and [adapters](#adapters).
 
 ## Dependencies
 
 `domiform`, the binary, has no prerequisites; after building it from source or grabbing a version from
 the release page, you can just run it. However, most users will need "sidecar" programs to serve
-as the transport layer for devices and commands (as Domiform does not implement these protocols
+as the transport layer between their server and devices (as Domiform does not implement these protocols
 itself).
 
-For example, a zigbee lightbulb cannot communicate directly with Domiform; instead, there exists
+For example, a zigbee lightbulb cannot communicate directly with Domiform. Instead, there exists
 a [zigbee2mqtt adapter](./src/adapters/zigbee2mqtt.rs) whose inclusion in your `config.yaml` file
 tells Domiform how to find a sidecar process for [zigbee2mqtt](https://github.com/Koenkk/zigbee2mqtt)
 running on your network. Basically, if you want to make a device available to Domiform, you'll need
-an adapter for its network/framework.
+an adapter to facilitate communication with the device's actual manager (which is usually a separate
+program).
+
+## Usage
+
+Compile and run the engine for a configuration:
+
+```zsh
+freret@mac-studio:~ $ ./domiform -c path/to/config.yaml
+compiled 15 device(s), 2 scene(s), 20 rule(s)
+running 
+```
+
+Check validity of configuration and exit:
+
+```zsh
+freret@mac-studio:~ $ ./domiform --check # config defaults to ./config.yaml
+ok: config.yaml is valid (15 device(s), 2 scene(s), 20 rule(s))
+```
+
+Compile and run in verbose mode:
+
+```zsh
+freret@mac-studio:~ $ ./domiform -c examples/simple.yaml -v
+compiled 2 device(s), 0 scene(s), 1 rule(s)
+[   0.000] [v] event  @0  StateReported { device: DeviceId(2), state: TimeOfDay(922) }
+[   0.000] [v]   state  clock := TimeOfDay(922)
+[   0.000] [v] event  @0  StateReported { device: DeviceId(2), state: SunUp(true) }
+[   0.000] [v]   state  clock := SunUp(true)
+running (verbose)
+```
 
 ## Concepts
 
 ### Devices
 
+The IoT entities that you want to control and/or observe. Lightbulbs, power meters, motion detectors,
+momentary switches, contact sensors -- all devices. They can be registered in your config file
+under the `devices` block. A device must declare an [adapter](#adapters) and should declare at least
+one [capability](#capabilities) or [event](#events).
+
 ### Capabilities
+
+The actions that a device can accept and the states that it can report. For example, if a device
+declares the `switch` capability, Domiform expects it to be able to accept the
+[Commands](./src/model.rs#L234) `SetSwitch` and `ToggleSwitch`; Domiform also expects the device
+to report a [CapabilityState](./src/model.rs#L95) variant `Switch(bool)`.
 
 ### Events
 
+The messages that a device can emit. Some devices don't make sense to describe only in terms
+[capabilities](#capabilities). A battery-powered scene controller button, for instance, may *look*
+like a switch, but (a) it can't respond to messages from a controller in any meaningful way, and (b)
+it has no runtime "state" that we'd want to observe.
+
+For devices like these, you'll add an `events` block in your device's config to map a named
+[Event](./src/model.rs#L188) to a message or slug emitted by your device. You can then configure
+[rules](#rules) that use that device's `event` as a trigger (defined by the `when`) rule block.
+
 ### Rules
+
+Definitions of what should happen when something else happens. Rules are like the "edges" of the
+graph that represents your smart home; they connect the devices, which are "nodes".
+
+Rules must have a `when` clause and a list of at least one `then` clause. They also take an optional
+`if` clause that will prevent the actions under `then` from firing if it evaluates to `false`. See
+the [examples](./examples/) directory for a variety of rule expressions.
 
 ### Adapters
 
-### Other
+Modules that facilitate communication between Domiform and end-device manager programs. An important
+part of Domiform's model is that the core runtime engine (which is responsible for evaluating
+[rules](#rules)) is protocol-agnostic. The engine knows nothing about the implementation differences
+between, e.g., zigbee and z-wave.
 
-scenes, rooms, etc?
+An adapter's main job is to translate:
 
-### Configuration vs. runtime state
+- protocol-specific messages into [Events](./src/model.rs#L188) (inbound)
+- [Commands](./src/model.rs#L234) into protocol-specific messages (outbound)
 
-Domiform's config is **fully reproducible from the YAML**: the file you author is
-the single source of truth, and domiform never writes back to it. A few features
-additionally need **runtime state** — data that is created at runtime and *cannot*
-exist in a hand-authored file. The clearest example is the `matter_device`
-adapter: when a controller (Apple Home, Google Home, Alexa) commissions domiform's
-Matter node, it mints an operational certificate and keys that live only after
-pairing. That is runtime data, analogous to a database's data directory — not
-configuration.
+However, adapters are *not* required to emit/accept messages for a protocol; in fact, the
+[Clock](./src/adapters/clock.rs), [Scheduler](./src/adapters/scheduler.rs), and
+[Virtual](./src/adapters/virtual_device.rs) adapters don't have any network capabilities at all.
+They exist so that the rules engine can be entirely deterministic and replayable by keeping
+side effects in isolated modules.
 
-Such state lives under `system.runtime_storage_path` (default: the config file's
-own directory), so it is stable regardless of where domiform is launched from.
-Persisting it is what lets a paired controller survive a domiform restart; delete
-the state and the controller must re-pair. The reproducibility guarantee covers
-the configuration — not commissioned identities, which no declarative file can
-capture.
+I'm adding adapters as I encounter new protocols IRL, and you're welcome to do the same! In general,
+adapter code is a lot easier than engine code to write and review because it's confined to its
+own module.
 
-### Known limitations of the Matter bridge
+## Development
 
-Two rough edges are worth knowing before you rely on `matter_device`. Neither is a
-bug we can fix from domiform's side:
+See the [contribution guide](./CONTRIBUTING.md) for information on modifying Domiform's source.
 
-- **Device names.** domiform serves each bridged device's real name to the
-  controller (via the Bridged Device Basic Information cluster), but **Apple Home
-  ignores it for bridged Matter devices** and shows its own device-type defaults
-  ("Light", "Light 2", …), with the bridge itself listed as "Matter Accessory".
-  This is a well-known Apple-side limitation shared by every Matter bridge (Home
-  Assistant's included) — rename the accessories once in the Home app and the names
-  stick. Google Home and Alexa are better-behaved.
-- **Color is controller-authoritative.** A color / color-temperature change made
-  *inside* domiform (a rule, or another adapter) is **not** reflected back to a
-  controller reading the Matter node — the underlying `rs-matter` (0.2) color
-  cluster exposes no way to push an externally-set color into its attributes. Color
-  set *from* a controller works fine; only the reverse (domiform → controller color
-  sync) is missing. On/off and brightness sync both directions normally. This lifts
-  when `rs-matter` adds an engine→handler color write-back.
+[Mise](https://mise.jdx.dev/) is recommended (but not required) for local development.
 
-### Virtual devices (`type: virtual`)
+Use the standard `cargo` commands to build, test, lint, etc. the program:
 
-Some devices have no protocol that reports their state — a "dumb" air conditioner
-driven only by an IR remote is the canonical case. The `virtual` adapter lets you
-declare a **domiform-owned stateful device**: it holds state that lives only in
-domiform, echoing each commanded value back as truth. Its *behavior* lives in rules,
-not the adapter.
-
-This is what turns a stateless appliance into a real, tappable tile in Apple Home:
-declare a virtual `switch`, expose it via `matter_device`, and write a rule that
-translates its changes into IR. A tap in the Home app (or a wall button toggling the
-same virtual switch) flips the state and fires the IR — see
-[`examples/virtual_ac.yaml`](examples/virtual_ac.yaml).
-
-Because write-only IR can't report the appliance's real state, a virtual switch is
-domiform's *belief*, not ground truth: using the OEM remote can drift the tile out of
-sync. That's inherent to IR, not a domiform bug. Where the appliance has discrete
-on/off IR codes (not just a toggle), a rule per direction keeps them aligned.
-
-## Docker
-
-Domiform ships a small (~17 MB) static Alpine image. You can either pull a
-prebuilt image or build your own from the `Dockerfile` in this repo.
-
-The binary reads `./config.yaml` by default, so mount your config into the
-container's working directory (or pass `-c` to point elsewhere):
-
-```sh
-docker run --rm -v "$PWD/config.yaml:/config.yaml" ghcr.io/OWNER/domiform
+```zsh
+freret@mac-studio:~ $ cargo build
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
 ```
 
-### Build it yourself
-
-For your own machine's architecture, a plain build is all you need:
-
-```sh
-docker build -t domiform .
+```zsh
+freret@mac-studio:~ $ cargo test -q
+running 20 tests
+....................
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+# ...
 ```
 
-To build for a specific architecture — e.g. an `arm64` Raspberry Pi from an
-`amd64` laptop — pass `--platform`. Docker emulates the target during the build
-via QEMU (`binfmt`), so no cross-toolchain setup is required:
+As the project evolves, I plan to lean on `mise` for scripting anything that could be in a
+Makefile:
 
-```sh
-docker build --platform linux/arm64 -t domiform .
+```zsh
+freret@mac-studio:~ $ mise run check
+[check] $ cargo fmt
+[check] $ cargo clippy
+    Checking domiform v0.0.0 (/Users/reillyfreret/Documents/domiform)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.73s
+[check] $ cargo check
+    Checking domiform v0.0.0 (/Users/reillyfreret/Documents/domiform)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s
+[check] $ cargo run -- --check examples/*.yaml
+# ...
 ```
 
-### Multi-arch images (maintainers)
-
-A single tag can serve every architecture; Docker picks the right variant per
-host automatically. This uses `buildx` and builds one image per platform, so it
-must be pushed to a registry:
-
-```sh
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/OWNER/domiform:latest \
-  --push .
+```zsh
+freret@mac-studio:~ $ mise run build-docker
+[assert-git-clean] $ git diff-index --quiet --cached HEAD -- || (echo "staged-but-uncommitted changes" && exit 1)
+[assert-git-clean] $ git diff-files --quiet || (echo "unstaged changes" && exit 1)
+# ...
 ```
-
-(Foreign-architecture builds run under emulation and are correspondingly slower.
-On the first run, `docker run --privileged --rm tonistiigi/binfmt --install all`
-registers the emulators if they aren't already present.)
-
-## TODO
-
-- [x] Zigbee2mqtt adapter
-- [x] Matter adapter (southbound: control Matter devices via `python-matter-server`)
-- [x] Z-Wave adapter
-- [x] Northbound Matter bridge (`matter_device`): expose domiform devices as a
-      native Matter node so Apple Home / Google Home / Alexa can control them.
-      Switch, Brightness, Color and ColorTemperature are live (a color device
-      appears as an extended color light); Occupancy / Battery are not yet
-      projected (admitting them without their sensor/power clusters would
-      advertise the wrong device type).
-- [ ] Documentation
-- [ ] Published binaries
-- [x] Dockerfile
 
 ## LLM Disclaimer
 

@@ -17,9 +17,7 @@ run = [
 run = [
   # https://stackoverflow.com/a/2659808 
   'git diff-index --quiet --cached HEAD -- || (echo "staged-but-uncommitted changes" && exit 1)',
-  # return 1 iff unstaged changes
   'git diff-files --quiet || (echo "unstaged changes" && exit 1)',
-  # return 1 iff untracked-and-unignored changes
   'test -z $(git ls-files --exclude-standard --others) || (echo "untracked changes" && exit 1)',
 ]
 

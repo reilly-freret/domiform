@@ -478,7 +478,11 @@ fn an_accepted_controller_write_converges_and_settles() {
     let published_len = transport.published().len();
     engine.advance(1);
     assert_eq!(transport.published().len(), published_len, "oscillation");
-    assert_eq!(*drops.0.borrow(), 0, "convergence must be natural, not truncated");
+    assert_eq!(
+        *drops.0.borrow(),
+        0,
+        "convergence must be natural, not truncated"
+    );
 }
 
 // --- config / compile / build path -------------------------------------------

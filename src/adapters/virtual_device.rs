@@ -63,7 +63,9 @@ impl Adapter for VirtualDeviceAdapter {
                 g: *g,
                 b: *b,
             },
-            Command::SetColorTemperature { mireds, .. } => CapabilityState::ColorTemperature(*mireds),
+            Command::SetColorTemperature { mireds, .. } => {
+                CapabilityState::ColorTemperature(*mireds)
+            }
             // No state to echo (a virtual device wouldn't normally be an IR sink,
             // but a no-op keeps it harmless).
             _ => return DispatchOutcome::ok(),
