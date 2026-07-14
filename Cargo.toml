@@ -41,7 +41,14 @@ glob = "0.3.1"
 # the pure state↔cluster mapping is unit-tested without a network (as with z2m's
 # `MqttTransport`). `async-io`/`futures-lite` are the runtime rs-matter's own
 # examples use; the adapter confines them to that thread.
-rs-matter = "0.2.0"
+# Pinned to a `main` commit (post-0.2.0) for two fixes absent from the 0.2.0
+# release: `persistent-subscriptions` (#504) resumes accepted subscriptions
+# across a reboot — so Apple Home doesn't hang on "updating…" after a restart —
+# and the reporter re-establishes a CASE session on demand (#504/#505) instead
+# of dying on a stale session, which is what left controllers stuck. We keep
+# `case-responder-only` OFF (its default) so `Exchange::initiate` may open a
+# fresh session; `case-resumption` (#503) adds the Sigma2-Resume fast path.
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "a51a82c87858fabecc336442e46ec796db210d6b", features = ["persistent-subscriptions", "case-resumption", "groups"] }
 async-io = "2"
 futures-lite = "2"
 embassy-futures = "0.1.2"
