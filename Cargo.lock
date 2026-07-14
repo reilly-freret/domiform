@@ -1695,8 +1695,7 @@ dependencies = [
 [[package]]
 name = "rs-matter"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65740dac8653d785f53e8973ac3598d33e6466ece9e9df69d1b62c07c5b41a5"
+source = "git+https://github.com/project-chip/rs-matter?rev=a51a82c87858fabecc336442e46ec796db210d6b#a51a82c87858fabecc336442e46ec796db210d6b"
 dependencies = [
  "aes",
  "async-io",
@@ -1753,8 +1752,7 @@ dependencies = [
 [[package]]
 name = "rs-matter-codegen"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d50e0230f99b1f579e892001c0f30468cdbe1d5eb8ac3cfb69bb2171c52b9c6f"
+source = "git+https://github.com/project-chip/rs-matter?rev=a51a82c87858fabecc336442e46ec796db210d6b#a51a82c87858fabecc336442e46ec796db210d6b"
 dependencies = [
  "convert_case",
  "miette",
@@ -1773,8 +1771,7 @@ dependencies = [
 [[package]]
 name = "rs-matter-macros"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db56aa5820960e514e9850fed999b365c678b71615d8873126f15efe14441999"
+source = "git+https://github.com/project-chip/rs-matter?rev=a51a82c87858fabecc336442e46ec796db210d6b#a51a82c87858fabecc336442e46ec796db210d6b"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
