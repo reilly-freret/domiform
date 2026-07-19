@@ -3,6 +3,8 @@ system:
   timezone: America/New_York
   latitude: 40.71
   longitude: -74.01
+  # Port for the read-only GUI (`domiform -g`); omit if you don't use `-g`.
+  gui_port: 8080
 
 adapters:
   home:

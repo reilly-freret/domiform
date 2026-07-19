@@ -110,6 +110,11 @@ pub struct RawSystem {
     /// it to the config file's own directory (stable regardless of cwd).
     #[serde(default)]
     pub runtime_storage_path: Option<String>,
+    /// TCP port for the read-only GUI server. Only consulted when the host is
+    /// launched with `-g`/`--gui`; when that flag is set but this is unset, the
+    /// host treats it as a fatal startup error rather than assuming a default.
+    #[serde(default)]
+    pub gui_port: Option<u16>,
 }
 
 /// One adapter entry: its `type` discriminator plus the remaining

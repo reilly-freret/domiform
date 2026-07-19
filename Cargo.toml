@@ -59,6 +59,13 @@ if-addrs = "0.15.0"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 env_logger = "0.11.11"
+# The optional read-only GUI (`-g`/`--gui`): `tiny_http` is a small, blocking HTTP
+# server that runs on its own std thread (no async runtime — the engine stays
+# single-threaded). It serves the device/rule graph as embedded JSON plus a small
+# self-authored force-directed renderer (inline vanilla JS), so the page is fully
+# self-contained and offline — no CDN, no vendored JS bundle. `serde_json`
+# (already a dependency) serializes the graph into the page.
+tiny_http = "0.12"
 
 [dev-dependencies]
 serde_json = "1.0.150"

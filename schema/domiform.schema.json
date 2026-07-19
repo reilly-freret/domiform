@@ -50,6 +50,12 @@
         "runtime_storage_path": {
           "type": "string",
           "description": "Directory for features that require runtime state (e.g. the matter_device Matter fabric store). This is runtime data, not configuration. Defaults to the config file's own directory."
+        },
+        "gui_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "TCP port for the read-only GUI server. Only used when domiform is launched with -g/--gui; running with -g but no gui_port is a fatal startup error (no default is assumed)."
         }
       }
     },

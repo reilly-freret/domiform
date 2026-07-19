@@ -5,6 +5,7 @@
 //!   domiform                        # runs ./config.yaml
 //!   domiform -c examples/foo.yaml   # an explicit config path
 //!   domiform -c foo.yaml -v         # + a full per-event trace
+//!   domiform -c foo.yaml -g         # + serve the read-only GUI (needs system.gui_port)
 //!   domiform -c foo.yaml --check    # validate only, then exit (no engine/I/O)
 //!   domiform --check 'examples/*.yaml'   # validate many at once (glob)
 //! ```
@@ -19,9 +20,12 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
+
+mod gui;
 
 /// Upper bound on how long the loop will sleep before re-checking, even when no
 /// timer is near. A `Waker` wakes us the instant inbound I/O arrives and
@@ -33,7 +37,7 @@ const MAX_SLEEP: Duration = Duration::from_secs(5);
 const DEFAULT_CONFIG: &str = "config.yaml";
 
 const HELP: &str = "\
-usage: domiform [-c <config.yaml>] [--check] [-v]
+usage: domiform [-c <config.yaml>] [--check] [-v] [-g]
        domiform --check <config.yaml|glob> [<config.yaml|glob> ...]
 
   -c, --config <path>   config file to run (default: ./config.yaml)
@@ -41,6 +45,8 @@ usage: domiform [-c <config.yaml>] [--check] [-v]
                         Accepts multiple paths and globs (e.g. 'examples/*.yaml')
                         and validates each; exits non-zero if any fails.
   -v, --verbose         trace every event, condition Truth, and dispatch
+  -g, --gui             serve a read-only device/rule graph over HTTP.
+                        Requires `system.gui_port` in the config.
   -h, --help            show this help";
 
 struct Args {
@@ -52,6 +58,9 @@ struct Args {
     /// engine or touching any transport. Handy for editors, pre-commit hooks,
     /// and CI. Only this mode accepts more than one config / a glob.
     check: bool,
+    /// Serve the read-only device/rule graph over HTTP. The listening port comes
+    /// from `system.gui_port`; this flag with no configured port is fatal.
+    gui: bool,
 }
 
 /// Hand-rolled arg parsing (no `clap` dependency): two flags and an optional
@@ -60,11 +69,13 @@ fn parse_args() -> Result<Args, String> {
     let mut configs: Vec<String> = Vec::new();
     let mut verbose = false;
     let mut check = false;
+    let mut gui = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-v" | "--verbose" => verbose = true,
             "--check" => check = true,
+            "-g" | "--gui" => gui = true,
             "-c" | "--config" => {
                 configs.push(args.next().ok_or("`-c`/`--config` needs a path")?);
             }
@@ -84,6 +95,7 @@ fn parse_args() -> Result<Args, String> {
         configs,
         verbose,
         check,
+        gui,
     })
 }
 
@@ -170,7 +182,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    run_engine(&config, args.verbose)
+    run_engine(&config, args.verbose, args.gui)
 }
 
 /// `--check`: compile each resolved config and report per-file, then exit
@@ -238,7 +250,7 @@ fn check_one(path: &str) -> Result<(), String> {
 }
 
 /// Compile one config and run it on the engine in real time (the normal mode).
-fn run_engine(config: &str, verbose: bool) -> ExitCode {
+fn run_engine(config: &str, verbose: bool, gui: bool) -> ExitCode {
     // Missing config is a usage error, not a runtime one — fail clearly.
     if !Path::new(config).exists() {
         eprintln!("config file not found: {config}");
@@ -268,6 +280,25 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
         cfg.scenes.len(),
         cfg.rules.len()
     );
+
+    // Start the read-only GUI before building the engine, so a misconfigured
+    // port fails fast rather than after spinning up transports. `-g` with no
+    // `system.gui_port` is fatal by design — we never assume a default port.
+    if gui {
+        let Some(port) = cfg.system.gui_port else {
+            eprintln!("`-g`/`--gui` requires `system.gui_port` to be set in the config");
+            return ExitCode::from(2);
+        };
+        // The topology is static after boot, so a one-shot snapshot is all the
+        // server needs. The `Arc` is the seam a future "reload config" feature
+        // would swap to refresh the served graph without a restart.
+        let snapshot = Arc::new(gui::GraphSnapshot::from_config(&cfg));
+        if let Err(e) = gui::serve(snapshot, port) {
+            eprintln!("could not start gui server on port {port}: {e}");
+            return ExitCode::from(2);
+        }
+        println!("gui listening on http://localhost:{port}");
+    }
 
     // A wake channel lets transports signal inbound I/O so the loop can block
     // instead of polling; hand each adapter a `Waker` clone via the engine build.
