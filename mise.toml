@@ -27,6 +27,6 @@ run = '''
   GIT_REVISION_SHA_SHORT=$(git rev-parse --short HEAD)
   GIT_BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
   DOCKER_TAG="${GIT_BRANCH_NAME}-${GIT_REVISION_SHA_SHORT}"
-  docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_PREFIX}:${DOCKER_TAG} --push . 
+  docker buildx build --platform ${DOCKER_PLATFORMS} -t ${DOCKER_PREFIX}:${DOCKER_TAG} -t ${DOCKER_PREFIX}:${GIT_BRANCH_NAME}-latest --push . 
 '''
 alias = "bd"

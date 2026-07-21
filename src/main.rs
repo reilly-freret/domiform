@@ -19,9 +19,13 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
+use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 
 /// Upper bound on how long the loop will sleep before re-checking, even when no
 /// timer is near. A `Waker` wakes us the instant inbound I/O arrives and
@@ -275,7 +279,7 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // Runtime state (e.g. the matter_device fabric store) defaults to living next
     // to the config file, so it's stable no matter where domiform is launched.
     let config_dir = Path::new(config).parent().unwrap_or(Path::new("."));
-    let mut engine = build_engine_with_waker_in(&cfg, Some(waker), config_dir);
+    let mut engine = build_engine_with_waker_in(&cfg, Some(waker.clone()), config_dir);
 
     // The stderr observer always logs failures; `-v` adds the full trace. Hand it
     // the compiler's name tables so lines read in config names, not raw ids.
@@ -298,11 +302,37 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     engine.start();
     println!("running {}", if verbose { "(verbose)" } else { "" });
 
+    // Graceful shutdown. Running as PID 1 in a container, the kernel delivers
+    // SIGTERM/SIGINT only if we install a handler — otherwise `docker stop` waits
+    // out its grace period and then SIGKILLs (the ~10s stall). We flip an atomic
+    // the run loop checks between iterations. The `Signals` iterator blocks on its
+    // own thread (not in an async-signal context), so it can safely poke the
+    // `Waker` to cut short the loop's `wait` and exit promptly; a second signal
+    // escalates to an immediate exit for an impatient operator.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    match Signals::new([SIGINT, SIGTERM]) {
+        Ok(mut signals) => {
+            let shutdown = shutdown.clone();
+            std::thread::Builder::new()
+                .name("signals".into())
+                .spawn(move || {
+                    for _ in signals.forever() {
+                        if shutdown.swap(true, Ordering::SeqCst) {
+                            std::process::exit(130);
+                        }
+                        waker.wake();
+                    }
+                })
+                .expect("spawn signal thread");
+        }
+        // Not fatal: without the handler we just lose fast/graceful exit.
+        Err(e) => eprintln!("could not install signal handler: {e} (shutdown may be slow)"),
+    }
+
     // Event-driven pump: block until the earlier of the next scheduled wake or an
     // inbound `Waker`, advance virtual time by the elapsed wall-clock, drain.
     let mut last = Instant::now();
-    loop {
-        // TODO: handle exits gracefully (esp from dockerized builds -- right now it takes ~10 seconds to exit once docker daemon sends the first signal)
+    while !shutdown.load(Ordering::SeqCst) {
         let timeout = engine
             .next_wake_delay()
             .map(Duration::from_millis)
@@ -310,9 +340,21 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
             .min(MAX_SLEEP);
         wakes.wait(timeout);
 
+        // A signal may have woken us; re-check before advancing so shutdown
+        // doesn't wait on one last needless tick.
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
         let now = Instant::now();
         let elapsed = now.duration_since(last).as_millis() as u64;
         last = now;
         engine.advance(elapsed);
     }
+
+    // Returning drops `engine`, which drops each adapter and its transport (the
+    // Matter node thread, the MQTT loop); the process then exits and the OS reaps
+    // any remaining background threads.
+    println!("shutting down");
+    ExitCode::SUCCESS
 }
