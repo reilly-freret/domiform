@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
+use domiform::{StderrObserver, build_engine_with_waker_in, compile_str, healthcheck_endpoint, wake_channel};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
@@ -272,6 +272,8 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
         cfg.scenes.len(),
         cfg.rules.len()
     );
+
+    healthcheck_endpoint(cfg.system.clone());
 
     // A wake channel lets transports signal inbound I/O so the loop can block
     // instead of polling; hand each adapter a `Waker` clone via the engine build.

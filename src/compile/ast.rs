@@ -110,6 +110,15 @@ pub struct RawSystem {
     /// it to the config file's own directory (stable regardless of cwd).
     #[serde(default)]
     pub runtime_storage_path: Option<String>,
+    #[serde(default)]
+    pub healthcheck: Option<RawHealthcheck>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawHealthcheck {
+    pub base: String,
+    pub port: u16,
 }
 
 /// One adapter entry: its `type` discriminator plus the remaining

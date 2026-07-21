@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use crate::adapters::plugin_for;
-use crate::compile::ast::{RawConfig, RawSchedule};
+use crate::compile::ast::{RawConfig, RawHealthcheck, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
 use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
@@ -51,6 +51,7 @@ pub struct SystemConfig {
     /// resolved by the host via [`runtime_storage_dir`], which supplies the config
     /// file's directory as the default base.
     pub runtime_storage_path: Option<String>,
+    pub healthcheck: Option<RawHealthcheck>,
 }
 
 impl SystemConfig {
@@ -599,6 +600,7 @@ fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
         latitude: raw.system.latitude.unwrap_or(0.0),
         longitude: raw.system.longitude.unwrap_or(0.0),
         runtime_storage_path: raw.system.runtime_storage_path.clone(),
+        healthcheck: raw.system.healthcheck.clone(),
     }
 }
 
