@@ -45,13 +45,13 @@ pub mod adapters;
 pub mod color;
 pub mod compile;
 pub mod engine;
+pub mod healthcheck;
 pub mod ids;
 pub mod model;
 pub mod observe;
 pub mod rule;
 pub mod state;
 pub mod wake;
-pub mod healthcheck;
 
 pub use adapters::{
     capability_is_exposable, default_state_file, device_type_for, Adapter, AttrReport,
@@ -72,5 +72,3 @@ pub use observe::{NoopObserver, Observer, StderrObserver};
 pub use rule::{CmpOp, Condition, CrossDir, Rule, Trigger, Truth};
 pub use state::StateStore;
 pub use wake::{wake_channel, WakeListener, WakeReason, Waker};
-
-pub use healthcheck::healthcheck_endpoint;

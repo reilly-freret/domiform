@@ -5,7 +5,7 @@ rust = "stable"
 DOCKER_PREFIX = "ghcr.io/reilly-freret/domiform"
 DOCKER_PLATFORMS = "linux/arm64,linux/amd64"
 
-[tasks.check]
+[tasks.fix]
 run = [
   "cargo fmt",
   "cargo clippy",

@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use domiform::{StderrObserver, build_engine_with_waker_in, compile_str, healthcheck_endpoint, wake_channel};
+use domiform::healthcheck::HealthcheckServer;
+use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
@@ -273,8 +274,6 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
         cfg.rules.len()
     );
 
-    healthcheck_endpoint(cfg.system.clone());
-
     // A wake channel lets transports signal inbound I/O so the loop can block
     // instead of polling; hand each adapter a `Waker` clone via the engine build.
     let (waker, wakes) = wake_channel();
@@ -312,6 +311,10 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // `Waker` to cut short the loop's `wait` and exit promptly; a second signal
     // escalates to an immediate exit for an impatient operator.
     let shutdown = Arc::new(AtomicBool::new(false));
+    let healthcheck = HealthcheckServer::new(cfg.system.healthcheck.clone(), shutdown.clone());
+    healthcheck
+        .start()
+        .expect("config specifies healthcheck server, but it failed to start");
     match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
             let shutdown = shutdown.clone();
@@ -322,6 +325,8 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
                         if shutdown.swap(true, Ordering::SeqCst) {
                             std::process::exit(130);
                         }
+                        // wake the healthcheck server so it can break its blocking loop
+                        healthcheck.self_connect();
                         waker.wake();
                     }
                 })
