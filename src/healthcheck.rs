@@ -2,52 +2,52 @@ use std::io::{prelude::*, BufReader};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::spawn;
+use std::thread::Builder;
 
-use crate::compile::ast::RawHealthcheck;
-
-pub struct HealthcheckServer {
-    base: Option<String>,
-    port: Option<u16>,
-    shutdown_signal: Arc<AtomicBool>,
-    enabled: bool,
-}
+use domiform::compile::ast::RawHealthcheck;
 
 /// super-simple healthcheck server. useful for containerized applications.
 ///
-/// when enabled, it responds to all requests with 200 OK "healthy"
+/// when enabled, it responds to all GET / requests with 200 OK "healthy"
 ///
 /// it's up to the user to treat network errors as healthcheck failures
+pub enum HealthcheckServer {
+    Disabled,
+    Enabled {
+        host: String,
+        port: u16,
+        shutdown_signal: Arc<AtomicBool>,
+    },
+}
+
 impl HealthcheckServer {
     pub fn new(
         config: Option<RawHealthcheck>,
         shutdown_signal: Arc<AtomicBool>,
     ) -> HealthcheckServer {
         let Some(healthcheck) = config else {
-            return Self {
-                base: None,
-                port: None,
-                shutdown_signal,
-                enabled: false,
-            };
+            return Self::Disabled;
         };
-        Self {
-            base: Some(healthcheck.base),
-            port: Some(healthcheck.port),
+        Self::Enabled {
+            host: healthcheck.host,
+            port: healthcheck.port,
             shutdown_signal,
-            enabled: true,
         }
     }
+
+    /// start the server in a simple blocking loop via TcpListener::incoming()
     pub fn start(&self) -> Result<(), std::io::Error> {
-        if !self.enabled {
+        let Self::Enabled {
+            host,
+            port,
+            shutdown_signal,
+        } = self
+        else {
             return Ok(());
         };
-        let (Some(base), Some(port)) = (self.base.as_deref(), self.port) else {
-            return Ok(());
-        };
-        let listener = TcpListener::bind((base, port))?;
-        let shutdown_signal = Arc::clone(&self.shutdown_signal);
-        spawn(move || {
+        let listener = TcpListener::bind((host.as_str(), *port))?;
+        let shutdown_signal = Arc::clone(shutdown_signal);
+        let _ = Builder::new().name("healthcheck".to_string()).spawn(move || {
             for stream in listener.incoming() {
                 if shutdown_signal.load(Ordering::SeqCst) {
                     break;
@@ -58,27 +58,36 @@ impl HealthcheckServer {
                     continue;
                 };
                 match request_line.as_str() {
-                    "GET / HTTP/1.1" => {
+                    s if s.starts_with("GET / ") => {
                         let _ = stream.write_all(
-                            "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhealthy".as_bytes(),
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhealthy",
                         );
                     }
                     _ => {
-                        continue;
+                      let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found",
+                      );
                     }
                 };
             }
         });
-        println!("healthcheck server started on {base}:{port}");
+        println!("healthcheck server started on {host}:{port}");
         Ok(())
     }
+
+    /// connect to the server from the same machine
+    ///
+    /// used to wake up the healthcheck server so that it may
+    ///   exit its blocking loop gracefully
     pub fn self_connect(&self) {
-        if !self.enabled {
+        let Self::Enabled {
+            port,
+            host: _,
+            shutdown_signal: _,
+        } = self
+        else {
             return;
         };
-        let (Some(base), Some(port)) = (self.base.as_deref(), self.port) else {
-            return;
-        };
-        let _ = TcpStream::connect((base, port));
+        let _ = TcpStream::connect(("127.0.0.1".to_string(), *port));
     }
 }

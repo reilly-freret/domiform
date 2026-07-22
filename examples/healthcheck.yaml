@@ -1,4 +1,5 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
 system:
   healthcheck:
-    base: "0.0.0.0"
+    host: "0.0.0.0"
     port: 8011

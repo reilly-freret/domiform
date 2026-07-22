@@ -45,7 +45,6 @@ pub mod adapters;
 pub mod color;
 pub mod compile;
 pub mod engine;
-pub mod healthcheck;
 pub mod ids;
 pub mod model;
 pub mod observe;

@@ -17,13 +17,15 @@
 //! scheduled wake or an inbound `Waker`, advance virtual time by the elapsed
 //! wall-clock, drain). The engine and adapters stay agreement-free of wall time.
 
+mod healthcheck;
+use healthcheck::HealthcheckServer;
+
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use domiform::healthcheck::HealthcheckServer;
 use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -301,7 +303,7 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     engine.add_observer(Box::new(observer));
 
     engine.start();
-    println!("running {}", if verbose { "(verbose)" } else { "" });
+    println!("running{}", if verbose { " (verbose)" } else { "" });
 
     // Graceful shutdown. Running as PID 1 in a container, the kernel delivers
     // SIGTERM/SIGINT only if we install a handler — otherwise `docker stop` waits
@@ -312,9 +314,10 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // escalates to an immediate exit for an impatient operator.
     let shutdown = Arc::new(AtomicBool::new(false));
     let healthcheck = HealthcheckServer::new(cfg.system.healthcheck.clone(), shutdown.clone());
-    healthcheck
-        .start()
-        .expect("config specifies healthcheck server, but it failed to start");
+    if let Err(e) = healthcheck.start() {
+        eprintln!("failed to start healthcheck server: {e}");
+        return ExitCode::FAILURE;
+    }
     match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
             let shutdown = shutdown.clone();

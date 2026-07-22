@@ -54,10 +54,10 @@
         "healthcheck": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["base", "port"],
+          "required": ["host", "port"],
           "properties": {
-            "base": { "type": "string", "description": "base url of the healthcheck endpoint." },
-            "port": { "type": "integer", "minimum": 2000, "maximum": 65535, "description": "port of the healthcheck endpoint." }
+            "host": { "type": "string", "description": "host address of the healthcheck server." },
+            "port": { "type": "integer", "minimum": 2000, "maximum": 65535, "description": "port of the healthcheck server." }
           },
           "description": "if provided, listen on the given port and serve a healthcheck endpoint at the given base url. useful for containerized environments."
         }

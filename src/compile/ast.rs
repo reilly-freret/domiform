@@ -117,7 +117,7 @@ pub struct RawSystem {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RawHealthcheck {
-    pub base: String,
+    pub host: String,
     pub port: u16,
 }
 
