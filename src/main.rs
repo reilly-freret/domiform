@@ -17,6 +17,9 @@
 //! scheduled wake or an inbound `Waker`, advance virtual time by the elapsed
 //! wall-clock, drain). The engine and adapters stay agreement-free of wall time.
 
+mod healthcheck;
+use healthcheck::HealthcheckServer;
+
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -300,7 +303,7 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     engine.add_observer(Box::new(observer));
 
     engine.start();
-    println!("running {}", if verbose { "(verbose)" } else { "" });
+    println!("running{}", if verbose { " (verbose)" } else { "" });
 
     // Graceful shutdown. Running as PID 1 in a container, the kernel delivers
     // SIGTERM/SIGINT only if we install a handler — otherwise `docker stop` waits
@@ -310,6 +313,11 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // `Waker` to cut short the loop's `wait` and exit promptly; a second signal
     // escalates to an immediate exit for an impatient operator.
     let shutdown = Arc::new(AtomicBool::new(false));
+    let healthcheck = HealthcheckServer::new(cfg.system.healthcheck.clone(), shutdown.clone());
+    if let Err(e) = healthcheck.start() {
+        eprintln!("failed to start healthcheck server: {e}");
+        return ExitCode::FAILURE;
+    }
     match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
             let shutdown = shutdown.clone();
@@ -320,6 +328,8 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
                         if shutdown.swap(true, Ordering::SeqCst) {
                             std::process::exit(130);
                         }
+                        // wake the healthcheck server so it can break its blocking loop
+                        healthcheck.self_connect();
                         waker.wake();
                     }
                 })
