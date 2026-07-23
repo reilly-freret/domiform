@@ -14,6 +14,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    if: false # TODO: builds take like 90 minutes on gh runners...
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,7 +43,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64,linux/amd64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha

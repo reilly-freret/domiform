@@ -3,7 +3,7 @@ rust = "stable"
 
 [env]
 DOCKER_PREFIX = "ghcr.io/reilly-freret/domiform"
-DOCKER_PLATFORMS = "linux/arm64,linux/amd64"
+DOCKER_PLATFORMS = "linux/arm64"
 
 [tasks.fix]
 run = [
