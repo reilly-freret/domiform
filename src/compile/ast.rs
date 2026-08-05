@@ -115,6 +115,15 @@ pub struct RawSystem {
     /// host treats it as a fatal startup error rather than assuming a default.
     #[serde(default)]
     pub gui_port: Option<u16>,
+    #[serde(default)]
+    pub healthcheck: Option<RawHealthcheck>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawHealthcheck {
+    pub host: String,
+    pub port: u16,
 }
 
 /// One adapter entry: its `type` discriminator plus the remaining

@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use crate::adapters::plugin_for;
-use crate::compile::ast::{RawConfig, RawSchedule};
+use crate::compile::ast::{RawConfig, RawHealthcheck, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
 use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
@@ -55,6 +55,7 @@ pub struct SystemConfig {
     /// with `-g`/`--gui`; `None` means "no port configured", which the host makes
     /// fatal if `-g` is passed. The compiler never assumes a default.
     pub gui_port: Option<u16>,
+    pub healthcheck: Option<RawHealthcheck>,
 }
 
 impl SystemConfig {
@@ -607,6 +608,7 @@ fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
         // on the runtime `-g` flag, which the compiler doesn't see. The host
         // enforces "`-g` needs a port" at startup.
         gui_port: raw.system.gui_port,
+        healthcheck: raw.system.healthcheck.clone(),
     }
 }
 

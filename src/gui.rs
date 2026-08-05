@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::thread;
 
 use domiform::{
-    ActionId, CapabilityKind, CmpOp, Command, CompiledConfig, Condition, CrossDir, DeviceId, Millis,
-    Trigger,
+    ActionId, CapabilityKind, CmpOp, Command, CompiledConfig, Condition, CrossDir, DeviceId,
+    Millis, Trigger,
 };
 use serde::Serialize;
 
@@ -127,7 +127,10 @@ impl GraphSnapshot {
 /// represents, then the rule's trigger, condition (if any), and `for` duration.
 fn edge_detail(cfg: &CompiledConfig, rule: &domiform::Rule, cmd: &Command) -> String {
     let mut detail = describe_command(cfg, cmd);
-    detail.push_str(&format!("\ntrigger: {}", describe_trigger(cfg, &rule.trigger)));
+    detail.push_str(&format!(
+        "\ntrigger: {}",
+        describe_trigger(cfg, &rule.trigger)
+    ));
     if let Some(cond) = describe_condition(cfg, &rule.condition) {
         detail.push_str(&format!("\nif: {cond}"));
     }
@@ -175,20 +178,44 @@ fn cmp_symbol(op: CmpOp) -> &'static str {
 fn describe_trigger(cfg: &CompiledConfig, t: &Trigger) -> String {
     match t {
         Trigger::Action { device, action } => {
-            format!("on '{}' from {}", action_name(cfg, *device, *action), dev_name(cfg, *device))
+            format!(
+                "on '{}' from {}",
+                action_name(cfg, *device, *action),
+                dev_name(cfg, *device)
+            )
         }
         Trigger::Changed { device, kind, to } => {
-            format!("when {} {} → {}", dev_name(cfg, *device), cap_name(*kind), to)
+            format!(
+                "when {} {} → {}",
+                dev_name(cfg, *device),
+                cap_name(*kind),
+                to
+            )
         }
-        Trigger::Crosses { device, kind, bound, dir } => {
+        Trigger::Crosses {
+            device,
+            kind,
+            bound,
+            dir,
+        } => {
             let arrow = match dir {
                 CrossDir::Above => "rises to",
                 CrossDir::Below => "falls to",
             };
-            format!("when {} {} {} {}", dev_name(cfg, *device), cap_name(*kind), arrow, bound)
+            format!(
+                "when {} {} {} {}",
+                dev_name(cfg, *device),
+                cap_name(*kind),
+                arrow,
+                bound
+            )
         }
         Trigger::Reports { device, kind } => {
-            format!("on every {} {} report", dev_name(cfg, *device), cap_name(*kind))
+            format!(
+                "on every {} {} report",
+                dev_name(cfg, *device),
+                cap_name(*kind)
+            )
         }
         Trigger::Timer { .. } => "when a timer elapses".to_string(),
         Trigger::Time { schedule } => {
@@ -217,24 +244,40 @@ fn describe_condition(cfg: &CompiledConfig, c: &Condition) -> Option<String> {
         )),
         Condition::And(parts) => join_conditions(cfg, parts, " and "),
         Condition::Or(parts) => join_conditions(cfg, parts, " or "),
-        Condition::BoolEquals { device, kind, value } => {
-            Some(format!("{} {} is {}", dev_name(cfg, *device), cap_name(*kind), value))
-        }
-        Condition::Compare { device, kind, op, value } => Some(format!(
+        Condition::BoolEquals {
+            device,
+            kind,
+            value,
+        } => Some(format!(
+            "{} {} is {}",
+            dev_name(cfg, *device),
+            cap_name(*kind),
+            value
+        )),
+        Condition::Compare {
+            device,
+            kind,
+            op,
+            value,
+        } => Some(format!(
             "{} {} {} {}",
             dev_name(cfg, *device),
             cap_name(*kind),
             cmp_symbol(*op),
             value
         )),
-        Condition::ColorEquals { device, r, g, b } => {
-            Some(format!("{} color is #{r:02X}{g:02X}{b:02X}", dev_name(cfg, *device)))
-        }
+        Condition::ColorEquals { device, r, g, b } => Some(format!(
+            "{} color is #{r:02X}{g:02X}{b:02X}",
+            dev_name(cfg, *device)
+        )),
     }
 }
 
 fn join_conditions(cfg: &CompiledConfig, parts: &[Condition], sep: &str) -> Option<String> {
-    let rendered: Vec<String> = parts.iter().filter_map(|c| describe_condition(cfg, c)).collect();
+    let rendered: Vec<String> = parts
+        .iter()
+        .filter_map(|c| describe_condition(cfg, c))
+        .collect();
     if rendered.is_empty() {
         None
     } else {
@@ -246,25 +289,61 @@ fn describe_command(cfg: &CompiledConfig, cmd: &Command) -> String {
     let over = |t: &Option<Millis>| t.map(|m| format!(" over {m}ms")).unwrap_or_default();
     match cmd {
         Command::SetSwitch { device, on } => {
-            format!("set {} {}", dev_name(cfg, *device), if *on { "on" } else { "off" })
+            format!(
+                "set {} {}",
+                dev_name(cfg, *device),
+                if *on { "on" } else { "off" }
+            )
         }
         Command::ToggleSwitch { device } => format!("toggle {}", dev_name(cfg, *device)),
-        Command::SetBrightness { device, value, transition } => {
-            format!("set {} brightness to {}%{}", dev_name(cfg, *device), value, over(transition))
+        Command::SetBrightness {
+            device,
+            value,
+            transition,
+        } => {
+            format!(
+                "set {} brightness to {}%{}",
+                dev_name(cfg, *device),
+                value,
+                over(transition)
+            )
         }
         Command::DecreaseBrightness { device, value } => {
-            format!("decrease {} brightness by {}", dev_name(cfg, *device), value)
+            format!(
+                "decrease {} brightness by {}",
+                dev_name(cfg, *device),
+                value
+            )
         }
         Command::IncreaseBrightness { device, value } => {
-            format!("increase {} brightness by {}", dev_name(cfg, *device), value)
+            format!(
+                "increase {} brightness by {}",
+                dev_name(cfg, *device),
+                value
+            )
         }
-        Command::SetColor { device, r, g, b, transition } => format!(
+        Command::SetColor {
+            device,
+            r,
+            g,
+            b,
+            transition,
+        } => format!(
             "set {} color to #{r:02X}{g:02X}{b:02X}{}",
             dev_name(cfg, *device),
             over(transition)
         ),
-        Command::SetColorTemperature { device, mireds, transition } => {
-            format!("set {} color temp to {} mired{}", dev_name(cfg, *device), mireds, over(transition))
+        Command::SetColorTemperature {
+            device,
+            mireds,
+            transition,
+        } => {
+            format!(
+                "set {} color temp to {} mired{}",
+                dev_name(cfg, *device),
+                mireds,
+                over(transition)
+            )
         }
         Command::SendIrCode { device, code } => {
             format!("send IR code '{}' to {}", code, dev_name(cfg, *device))
