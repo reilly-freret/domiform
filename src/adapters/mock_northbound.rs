@@ -6,9 +6,10 @@
 //! Two facets, matching a real northbound adapter:
 //! * **Observer**: every `state_folded` the engine delivers is recorded (this is
 //!   the mirror a real bridge would push to Matter / a future frontend).
-//! * **Adapter**: `tick` drains any queued *consumer writes* into inbound
-//!   `Event::RequestedChange`s — the same pull-after-`Waker` path a Matter
-//!   controller's attribute write (from Apple Home, Google, Alexa, …) would take.
+//! * **Adapter**: `tick` drains any queued *consumer intents* into inbound
+//!   `Event::RequestedChange` / `Event::RequestedScene`s — the same
+//!   pull-after-`Waker` path a Matter controller's attribute write (from Apple
+//!   Home, Google, Alexa, …) or a REST call would take.
 //!
 //! Tests share the adapter's inner state via an [`Rc<RefCell<_>>`] handle (the
 //! same pattern the integration tests use for recorders), so a test can read what
@@ -24,8 +25,8 @@ use super::plugin::{AdapterPlugin, ExposeSpec, Polarity};
 use super::{config_of, Adapter, DispatchOutcome, NorthboundAdapter};
 use crate::compile::diagnostic::Diagnostic;
 use crate::compile::resolve::DeviceDef;
-use crate::ids::DeviceId;
-use crate::model::{CapabilityState, Command, Event, Millis};
+use crate::ids::{DeviceId, SceneId};
+use crate::model::{CapabilityState, Command, Desired, Event, Millis};
 use crate::observe::Observer;
 use crate::wake::Waker;
 
@@ -38,7 +39,10 @@ pub struct MockNorthboundState {
     pub mirrored: Vec<(DeviceId, CapabilityState)>,
     /// Consumer writes queued by a test, drained into `RequestedChange`s on the
     /// next `tick` (FIFO). Models input arriving on a bridge's own thread.
-    pub pending_writes: Vec<(DeviceId, CapabilityState)>,
+    pub pending_writes: Vec<(DeviceId, Desired)>,
+    /// Consumer scene activations queued by a test, drained into
+    /// `RequestedScene`s on the next `tick` — after `pending_writes`.
+    pub pending_scenes: Vec<SceneId>,
 }
 
 /// A cloneable handle to a mock northbound adapter's shared state. Clone it before
@@ -67,10 +71,24 @@ impl MockNorthbound {
             .map(|(_, s)| s.clone())
     }
 
-    /// Queue a consumer write (a "tap"), delivered as a `RequestedChange` on the
-    /// adapter's next `tick`.
+    /// Queue a consumer write of a *concrete value* (a "tap"), delivered as a
+    /// `RequestedChange` on the adapter's next `tick`. A convenience wrapper over
+    /// [`queue_intent`](Self::queue_intent) for the common case.
     pub fn queue_write(&self, device: DeviceId, desired: CapabilityState) {
+        self.queue_intent(device, Desired::Set(desired));
+    }
+
+    /// Queue any consumer intent — including the *relative* ones (`Toggle`,
+    /// `AdjustBrightness`) that a value-oriented frontend like Matter never sends
+    /// but REST does.
+    pub fn queue_intent(&self, device: DeviceId, desired: Desired) {
         self.0.borrow_mut().pending_writes.push((device, desired));
+    }
+
+    /// Queue a consumer scene activation, delivered as a `RequestedScene` on the
+    /// adapter's next `tick`.
+    pub fn queue_scene(&self, scene: SceneId) {
+        self.0.borrow_mut().pending_scenes.push(scene);
     }
 }
 
@@ -86,12 +104,24 @@ impl Adapter for MockNorthbound {
         DispatchOutcome::Permanent("northbound adapter is not a dispatch target".into())
     }
 
-    /// Drain queued consumer writes into inbound `RequestedChange` events.
+    /// Drain queued consumer writes and scene activations into inbound
+    /// `RequestedChange` / `RequestedScene` events.
     fn tick(&mut self, _now: Millis) -> Vec<Event> {
-        let writes = std::mem::take(&mut self.0.borrow_mut().pending_writes);
+        let (writes, scenes) = {
+            let mut inner = self.0.borrow_mut();
+            (
+                std::mem::take(&mut inner.pending_writes),
+                std::mem::take(&mut inner.pending_scenes),
+            )
+        };
         writes
             .into_iter()
             .map(|(device, desired)| Event::RequestedChange { device, desired })
+            .chain(
+                scenes
+                    .into_iter()
+                    .map(|scene| Event::RequestedScene { scene }),
+            )
             .collect()
     }
 }

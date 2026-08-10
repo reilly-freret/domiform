@@ -112,11 +112,20 @@ pub struct RawSystem {
     pub runtime_storage_path: Option<String>,
     #[serde(default)]
     pub healthcheck: Option<RawHealthcheck>,
+    #[serde(default)]
+    pub rest_api: Option<RawRestApi>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RawHealthcheck {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawRestApi {
     pub host: String,
     pub port: u16,
 }

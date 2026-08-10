@@ -164,6 +164,76 @@ I'm adding adapters as I encounter new protocols IRL, and you're welcome to do t
 adapter code is a lot easier than engine code to write and review because it's confined to its
 own module.
 
+## REST API
+
+An optional read/write HTTP API over the running engine, for scripts, dashboards, Home Assistant
+`rest_command`s, or a plain `curl`. Enable it from the `system` block:
+
+```yaml
+system:
+  rest_api:
+    host: "127.0.0.1"
+    port: 8020
+```
+
+See [`examples/rest_api.yaml`](./examples/rest_api.yaml) for a complete config you can run offline.
+
+> [!WARNING]
+> **The API is unauthenticated.** Every endpoint is reachable by anyone who can open a TCP
+> connection to the port, and the write endpoints control physical devices in your home. Bind
+> `127.0.0.1` (as above) unless it sits behind an authenticating reverse proxy — Caddy or nginx with
+> basic auth or mTLS is the supported way to expose it. Domiform logs a warning at startup if you
+> bind a non-loopback address. No CORS headers are sent, deliberately: that's what stops a web page
+> on another origin from driving your house.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/system` | Engine time, timezone, version, counts |
+| `GET` | `/devices` | Every device and its current state |
+| `GET` | `/devices/{name}` | One device |
+| `POST` | `/devices/{name}/intent` | Set / toggle / adjust / send an IR code |
+| `GET` | `/scenes` | Every scene |
+| `POST` | `/scenes/{name}/activate` | Run a scene |
+| `GET` | `/rules` | Per-rule truth and fire counts |
+
+An intent body is exactly one of:
+
+```json
+{ "set": { "switch": true } }
+{ "set": { "brightness": 40 } }
+{ "set": { "color": { "r": 255, "g": 0, "b": 0 } } }
+{ "set": { "color_temperature": 370 } }
+{ "toggle": {} }
+{ "adjust_brightness": -10 }
+{ "send_ir_code": "<base64>" }
+```
+
+Three conventions are worth knowing:
+
+- **`202`, not `200`, and never the resulting state.** A write is *queued*: the engine dispatches it
+  on the next loop iteration, and the device's own echo folds some time after that. Returning a
+  state would mean inventing one. Poll `GET /devices/{name}` if you need confirmation.
+- **`null` means "never reported", not "off".** Every capability a device *declared* appears as a
+  key; one the engine has never heard about is an explicit `null`. That's a real and distinct state
+  (the engine's `Truth::Unknown`) and the reason a rule reading it won't fire. `ir_transmitter` is
+  write-only, so it always reads `null`.
+- **`engine_now_ms` is virtual time since boot, not a Unix timestamp.** For the real-time host it
+  tracks wall-clock elapsed, but it starts at 0 every run.
+
+Values use the canonical units from [`src/model.rs`](./src/model.rs) with no conversion: brightness,
+battery and humidity are `0..=100`, temperature is centidegrees Celsius, `color_temperature` is
+mireds, illuminance is lux, power is watts, and `time_of_day` is minutes since local midnight.
+
+Errors all share one shape, with a machine-readable `code`:
+
+```json
+{ "error": { "code": "unknown_device", "message": "no device named 'kitchen_lmap'" } }
+```
+
+`400` is a malformed body, `404` an unknown device/scene/route, `405` a wrong method, and `422` a
+capability the device didn't declare or one that's read-only (you can't *set* a motion sensor's
+`occupancy` — it reports it).
+
 ## Development
 
 See the [contribution guide](./CONTRIBUTING.md) for information on modifying Domiform's source.

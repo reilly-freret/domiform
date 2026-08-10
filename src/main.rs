@@ -26,7 +26,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use domiform::{build_engine_with_waker_in, compile_str, wake_channel, StderrObserver};
+use domiform::adapters::rest_api;
+use domiform::{
+    build_engine_with_waker_in, compile_str, wake_channel, Directory, RestApiServer, StderrObserver,
+};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
@@ -284,6 +287,27 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     let config_dir = Path::new(config).parent().unwrap_or(Path::new("."));
     let mut engine = build_engine_with_waker_in(&cfg, Some(waker.clone()), config_dir);
 
+    // Shutdown flag, created up here because the REST adapter must be registered
+    // before `engine.start()` and the servers that share the flag are built
+    // alongside it. The run loop checks it between iterations.
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    // The REST API is a *northbound adapter*: the engine owns it, and the HTTP
+    // threads reach it through the handle (a state mirror + a channel), never
+    // through the `Engine` itself — which is neither `Send` nor `Sync`. This pair
+    // is cheap, so it's built unconditionally; nothing binds a socket unless the
+    // config asked for it.
+    let (rest_adapter, rest_observer, rest_handle) = rest_api::channel(Some(waker.clone()));
+    // MUST be before `engine.start()`: `start` calls `sync_northbound_startup_state`,
+    // which replays the current store into every northbound adapter. Registering
+    // afterwards would leave the mirror silently empty, so an early `GET` would
+    // report `null` for values the engine already knows.
+    engine.add_northbound(Box::new(rest_adapter));
+    // The observer half, for `GET /rules`. Both registrations are required: the
+    // engine fans only `state_folded` to northbound adapters, so `rule_considered`
+    // arrives solely through the ordinary observer list. They share one mirror.
+    engine.add_observer(Box::new(rest_observer));
+
     // The stderr observer always logs failures; `-v` adds the full trace. Hand it
     // the compiler's name tables so lines read in config names, not raw ids.
     let observer = if verbose {
@@ -312,12 +336,27 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // own thread (not in an async-signal context), so it can safely poke the
     // `Waker` to cut short the loop's `wait` and exit promptly; a second signal
     // escalates to an immediate exit for an impatient operator.
-    let shutdown = Arc::new(AtomicBool::new(false));
     let healthcheck = HealthcheckServer::new(cfg.system.healthcheck.clone(), shutdown.clone());
     if let Err(e) = healthcheck.start() {
         eprintln!("failed to start healthcheck server: {e}");
         return ExitCode::FAILURE;
     }
+
+    // The REST server translates sockets to `routes::handle` calls against the
+    // directory (names) and the handle (state + intents). A configured-but-
+    // unbindable port is a misconfiguration, not a degraded mode — same handling
+    // as the healthcheck.
+    let rest_api = RestApiServer::new(
+        cfg.system.rest_api.clone(),
+        Arc::new(Directory::from_config(&cfg)),
+        rest_handle,
+        shutdown.clone(),
+    );
+    if let Err(e) = rest_api.start() {
+        eprintln!("failed to start rest_api server: {e}");
+        return ExitCode::FAILURE;
+    }
+
     match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
             let shutdown = shutdown.clone();
@@ -328,8 +367,10 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
                         if shutdown.swap(true, Ordering::SeqCst) {
                             std::process::exit(130);
                         }
-                        // wake the healthcheck server so it can break its blocking loop
+                        // wake each blocking accept loop so it can observe the
+                        // shutdown flag and break out promptly
                         healthcheck.self_connect();
+                        rest_api.self_connect();
                         waker.wake();
                     }
                 })

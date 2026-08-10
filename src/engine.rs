@@ -28,7 +28,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::adapters::{Adapter, DispatchOutcome, SchedulerAdapter};
 use crate::ids::{AdapterIdx, DeviceId, RuleId, SceneId};
-use crate::model::{CapabilityState, Command, Event, Millis, TimerKey};
+use crate::model::{CapabilityState, Command, Desired, Event, Millis, TimerKey};
 use crate::observe::Observer;
 use crate::rule::Rule;
 use crate::state::StateStore;
@@ -348,6 +348,17 @@ impl Engine {
                 continue;
             }
 
+            // A consumer-requested scene activation — the sibling of
+            // `RequestedChange` for the one intent that isn't device-scoped.
+            // Identical semantics: dispatch one causal hop from the request, fold
+            // nothing, match no rules. Expansion into the scene's member commands
+            // already happens inside `dispatch_at`, so there is nothing to do here
+            // but hand it the command.
+            if let Event::RequestedScene { scene } = &ev {
+                self.dispatch_at(Command::ActivateScene { scene: *scene }, 1, depth);
+                continue;
+            }
+
             // Capture the *prior* value of a reported capability before folding,
             // so on-change (edge) triggers can see the transition. The store is
             // about to be overwritten with the new value in `fold_state`, so this
@@ -548,19 +559,49 @@ impl Engine {
         }
     }
 
-    /// Translate a consumer-requested *desired state* into the `Command` that
-    /// achieves it — the canonical "northbound intent → action" mapping, kept in
-    /// one place so every northbound adapter (HomeKit, REST, web) speaks pure
-    /// state and never constructs commands itself. Requests carry no transition
-    /// (a tap is instantaneous intent), so brightness/color use `None`.
+    /// Translate a consumer-requested *intent* into the `Command` that achieves
+    /// it — the canonical "northbound intent → action" mapping, kept in one place
+    /// so every northbound adapter (HomeKit, REST, web) speaks [`Desired`] and
+    /// never constructs commands itself.
+    ///
+    /// The *relative* intents (`Toggle`, `AdjustBrightness`) lower to the
+    /// corresponding relative `Command` rather than being resolved here: they are
+    /// resolved against the store at dispatch time by
+    /// [`resolve_implicit_state_command`](Engine::resolve_implicit_state_command),
+    /// which also clamps to `0..=100`. Resolving earlier would race with in-flight
+    /// state.
+    fn command_for_requested_change(device: DeviceId, desired: &Desired) -> Option<Command> {
+        match desired {
+            Desired::Set(state) => Self::command_for_state(device, state),
+            Desired::Toggle => Some(Command::ToggleSwitch { device }),
+            Desired::AdjustBrightness(delta) if *delta > 0 => Some(Command::IncreaseBrightness {
+                device,
+                value: delta.unsigned_abs(),
+            }),
+            Desired::AdjustBrightness(delta) if *delta < 0 => Some(Command::DecreaseBrightness {
+                device,
+                value: delta.unsigned_abs(),
+            }),
+            // A zero delta asks for nothing; emitting a command would dispatch a
+            // pointless write to the device.
+            Desired::AdjustBrightness(_) => None,
+            Desired::SendIr(code) => Some(Command::SendIrCode {
+                device,
+                code: code.clone(),
+            }),
+        }
+    }
+
+    /// The concrete-value half of [`command_for_requested_change`]: a desired
+    /// `CapabilityState` → the `Command` that sets it. Requests carry no
+    /// transition (a tap is instantaneous intent), so brightness/color use `None`.
     ///
     /// Returns `None` for capability states that are *reports only* and have no
     /// corresponding write command (`Occupancy`, `Battery`, `TimeOfDay`,
-    /// `SunUp`) — requesting those is a harmless no-op rather than an error.
-    fn command_for_requested_change(
-        device: DeviceId,
-        desired: &CapabilityState,
-    ) -> Option<Command> {
+    /// `SunUp`) — requesting those is a harmless no-op rather than an error. A
+    /// frontend that can report a better error rejects them at its own edge (the
+    /// REST API returns `422`); see [`CapabilityKind::is_writable`].
+    fn command_for_state(device: DeviceId, desired: &CapabilityState) -> Option<Command> {
         use CapabilityState as S;
         match *desired {
             S::Switch(on) => Some(Command::SetSwitch { device, on }),

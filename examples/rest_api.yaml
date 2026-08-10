@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# The REST API: a read/write HTTP surface over the running engine.
+#
+#   GET  /system                     engine time, timezone, counts
+#   GET  /devices                    every device and its current state
+#   GET  /devices/{name}             one device
+#   POST /devices/{name}/intent      set / toggle / adjust_brightness / send_ir_code
+#   GET  /scenes                     every scene
+#   POST /scenes/{name}/activate     run a scene
+#   GET  /rules                      per-rule truth + fire counts (debugging)
+#
+# SECURITY: the API is UNAUTHENTICATED in v1. Anyone who can open a TCP
+# connection to the port can control the devices, so `host` is 127.0.0.1 here —
+# reachable only from this machine. To expose it on a network, put an
+# authenticating reverse proxy (Caddy/nginx with basic auth or mTLS) in front.
+#
+# This example uses `type: mock` adapters, so it runs with no broker or radio:
+#
+#   cargo run -- -c examples/rest_api.yaml -v
+#   curl localhost:8020/devices
+#   curl -X POST localhost:8020/devices/desk_lamp/intent -d '{"toggle":{}}'
+#   curl -X POST localhost:8020/scenes/evening/activate
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+  rest_api:
+    host: "127.0.0.1"
+    port: 8020
+
+adapters:
+  bench:
+    type: mock
+
+devices:
+  desk_lamp:
+    adapter: bench
+    address: desk_lamp
+    room: office
+    capabilities: [switch, brightness, color_temperature]
+
+  shelf_light:
+    adapter: bench
+    address: shelf_light
+    room: office
+    capabilities: [switch, brightness]
+
+  # A sensor, to show the read path. Its capabilities are report-only, so a POST
+  # naming one comes back 422 rather than failing opaquely inside the engine.
+  office_motion:
+    adapter: bench
+    address: office_motion
+    room: office
+    capabilities: [occupancy, battery]
+
+scenes:
+  evening:
+    - turn_on: desk_lamp
+    - set_brightness: { device: desk_lamp, value: 40 }
+    - turn_on: shelf_light
+    - set_brightness: { device: shelf_light, value: 20 }
+
+  # Activated only over HTTP (POST /scenes/all_off/activate), never from a rule.
+  # `--check` warns E_UNUSED_SCENE here: the compiler sees static config and
+  # can't know a network client will call it. Expected for an API-driven scene.
+  all_off:
+    - turn_off: desk_lamp
+    - turn_off: shelf_light
+
+rules:
+  # Gives `GET /rules` something to report: its `last_truth` and `fire_count`
+  # are the fastest way to see why a rule is or isn't firing.
+  motion_lights:
+    when: { changed: { device: office_motion, capability: occupancy, to: true } }
+    then:
+      - activate_scene: evening

@@ -241,8 +241,9 @@ socket, replay is guaranteed. (The `Waker` only influences *when the host calls*
 
 **The drain loop** (`drain`) per event: (A) drop if `depth > max_cascade_depth`;
 (B) intercept internal retry timers (re-dispatch at depth 0); (C) `RequestedChange`
-(northbound intent) → translate to a `Command`, dispatch, **do not fold, do not
-match rules**; (D) `fold_state` — update the store; (E) match every rule
+(northbound intent, carrying a `Desired`) → translate to a `Command`, dispatch,
+**do not fold, do not match rules**; (C′) `RequestedScene` — the same, dispatching
+`ActivateScene`; (D) `fold_state` — update the store; (E) match every rule
 (`trigger.matches` then `condition.eval`), always computing the full three-valued
 `Truth` and reporting it (no short-circuit — debuggability); (F) dispatch commands
 of fired rules.
@@ -257,7 +258,12 @@ Two subtleties worth internalizing:
   folded and never matched. Reality arrives later as the device's own echo
   (`StateReported`), which is what folds. So an app tap and a physical wall switch
   are indistinguishable to the engine, and the store only ever reflects *reported
-  reality*.
+  reality*. Its payload is a `Desired` (`model.rs`), not a bare `CapabilityState`:
+  the network must be able to express the *relative* intents a rule can — `Toggle`,
+  `AdjustBrightness`, `SendIr` — and those are resolved against the store at
+  **dispatch** time by `resolve_implicit_state_command`, never by the adapter,
+  which would race with in-flight state. `RequestedScene` is its sibling for the
+  one intent that isn't device-scoped.
 
 **Causal depth — the cleverest idea in the file.** The `u32` riding each queued
 event counts dispatch hops. External events + timer fires = depth 0; anything a
@@ -454,13 +460,29 @@ Adapters carry a `Polarity` (`adapters/plugin.rs`):
 
 - **Southbound** (default; zigbee2mqtt, matter, zwavejs) — domiform is the
   controller; owns/commands the devices *bound* to it. Gets an engine dispatch slot.
-- **Northbound** (`matter_device`, later REST/web/voice) — domiform is the source of
-  truth; the consumer is upstream. Exposes devices declared *elsewhere*, binds none,
-  gets **no** dispatch slot. Registered in a separate `northbound` list because it's
-  driven on *both* paths: `tick`/`next_wake` like an adapter (drain consumer input,
-  schedule wakes) **and** `state_folded` like an `Observer` (mirror engine state
-  outward). Consumer input arrives as `Event::RequestedChange` (an intent — see
-  Stop 3). `NorthboundAdapter` is a blanket impl for any `Adapter + Observer`.
+- **Northbound** (`matter_device`, `rest_api`, later web/voice) — domiform is the
+  source of truth; the consumer is upstream. Exposes devices declared *elsewhere*,
+  binds none, gets **no** dispatch slot. Registered in a separate `northbound` list
+  because it's driven on *both* paths: `tick`/`next_wake` like an adapter (drain
+  consumer input, schedule wakes) **and** `state_folded` like an `Observer` (mirror
+  engine state outward). Consumer input arrives as `Event::RequestedChange` /
+  `Event::RequestedScene` (intents — see Stop 3). `NorthboundAdapter` is a blanket
+  impl for any `Adapter + Observer`.
+
+  Two wrinkles worth knowing before you write one:
+
+  - **Only `state_folded` is fanned to the `northbound` list** (`fan_state_folded`).
+    Every *other* `Observer` callback — `rule_considered`, `command_dispatched`, … —
+    goes to `self.observers` alone, so a northbound adapter that implements one will
+    silently never be called. `rest_api` needs `rule_considered` for `GET /rules`, so
+    it ships a second type (`RestApiObserver`) that the host registers with
+    `add_observer`; both write the same `Arc<Mutex<Mirror>>`.
+  - **`rest_api` is not in the `PLUGINS` registry.** It's configured from the
+    `system` stanza rather than the `adapters` map — the same shape as `ClockAdapter`
+    — because it's an instance-level control surface that lists everything, which
+    `expose:` doesn't model. It also cannot hold an `Engine` (neither `Send` nor
+    `Sync`, and `advance` needs `&mut`), so its HTTP threads talk to it through a
+    state mirror plus an `mpsc` channel. See `adapters/rest_api/mod.rs`.
 
 ---
 

@@ -394,6 +394,42 @@ adapters or the deterministic core.
   southbound" section in adapter docs (pending); ✅ `--check` validates a
   matter_device config offline.
 
+**Phase 4 — the REST API, and widening the Phase 0 vocabulary. ✅ DONE.**
+See `plans/design/rest-api.md` for the full design. Two things here matter to
+*this* document, because they revise decisions recorded above.
+
+- **`Event::RequestedChange`'s payload widened from `CapabilityState` to
+  `Desired`.** Phase 0 chose "pure state" deliberately, and for Matter that
+  remains exactly right — a cluster attribute write really *is* a desired value.
+  But it made the network→engine vocabulary strictly narrower than the *rule*
+  vocabulary, and structurally so: config's `toggle:` / `send_ir_code:` are
+  lowered to `Command`s at **compile time** by `compile/lower.rs`, a path an
+  adapter cannot take (its only inbound channel is `tick -> Vec<Event>`). So
+  there was no way for a frontend to say "toggle", "brightness plus ten", or
+  "send this IR code" at all.
+
+  Resolving those inside a frontend was rejected: it races with in-flight engine
+  state and duplicates `Engine::resolve_implicit_state_command`, which already
+  does it correctly against the authoritative store at dispatch time. `Desired`
+  (`Set` / `Toggle` / `AdjustBrightness` / `SendIr`) widens the vocabulary once,
+  for every present and future northbound frontend, and keeps the intent→command
+  translation the engine's sole property. `matter_device` simply wraps its polled
+  pairs in `Desired::Set`; `MatterTransport` is unchanged.
+- **`Event::RequestedScene { scene }` added as a sibling.** Scene activation does
+  not fit inside `Desired`: `RequestedChange` carries a `DeviceId` and a scene has
+  none, so it would have meant a bogus device field on every scene request. Both
+  variants are honest and neither carries a dead field.
+- **A northbound adapter does *not* receive the full `Observer` surface.** Worth
+  recording because the REST design initially assumed otherwise: the engine fans
+  only `state_folded` to the `northbound` list (`fan_state_folded`); every other
+  callback goes to `self.observers`. An adapter needing `rule_considered` must
+  also be registered via `add_observer` — `rest_api` ships a second small type for
+  exactly this, sharing one `Arc<Mutex<Mirror>>`. If a future change makes
+  northbound adapters full observers, that shim can collapse.
+- **`rest_api` is configured from `system`, not `PLUGINS`** — an instance-level
+  control surface that lists everything and activates scenes, which the `expose:`
+  spec doesn't model. Precedent: `ClockAdapter`.
+
 ## 6. Risks / open questions
 
 - **`rs-matter` API churn** — the accepted bet (its README warns of

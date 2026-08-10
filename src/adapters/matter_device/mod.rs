@@ -35,7 +35,7 @@ use super::{config_of, Adapter, DispatchOutcome, NorthboundAdapter};
 use crate::compile::diagnostic::Diagnostic;
 use crate::compile::resolve::DeviceDef;
 use crate::ids::DeviceId;
-use crate::model::{CapabilityKind, CapabilityState, Command, Event, Millis};
+use crate::model::{CapabilityKind, CapabilityState, Command, Desired, Event, Millis};
 use crate::observe::Observer;
 use crate::wake::Waker;
 
@@ -183,10 +183,18 @@ impl Adapter for MatterDeviceAdapter {
                  domiform is restarted"
             );
         }
+        // Matter only ever expresses *concrete values* — a cluster attribute
+        // write really is a desired state — so every polled pair wraps in
+        // `Desired::Set`. The relative intents (`Toggle`, `AdjustBrightness`)
+        // exist for frontends that have no such attribute model; the
+        // `MatterTransport` trait is deliberately unchanged.
         self.transport
             .poll()
             .into_iter()
-            .map(|(device, desired)| Event::RequestedChange { device, desired })
+            .map(|(device, desired)| Event::RequestedChange {
+                device,
+                desired: Desired::Set(desired),
+            })
             .collect()
     }
 }

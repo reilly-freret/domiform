@@ -87,6 +87,75 @@ impl CapabilityKind {
                 | CapabilityKind::Smoke
         )
     }
+
+    /// The canonical config/wire name (`switch`, `color_temperature`, …). One
+    /// table, used by both the config resolver and any frontend that speaks names
+    /// (the REST API), so the two can never disagree about spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            CapabilityKind::Switch => "switch",
+            CapabilityKind::Brightness => "brightness",
+            CapabilityKind::Color => "color",
+            CapabilityKind::ColorTemperature => "color_temperature",
+            CapabilityKind::Occupancy => "occupancy",
+            CapabilityKind::Battery => "battery",
+            CapabilityKind::Temperature => "temperature",
+            CapabilityKind::Humidity => "humidity",
+            CapabilityKind::Illuminance => "illuminance",
+            CapabilityKind::Power => "power",
+            CapabilityKind::Contact => "contact",
+            CapabilityKind::WaterLeak => "water_leak",
+            CapabilityKind::Smoke => "smoke",
+            CapabilityKind::IrTransmitter => "ir_transmitter",
+            CapabilityKind::TimeOfDay => "time_of_day",
+            CapabilityKind::SunUp => "sun_up",
+        }
+    }
+
+    /// Inverse of [`name`](CapabilityKind::name). Includes the synthetic clock
+    /// capabilities (`time_of_day`, `sun_up`); callers that must reject those —
+    /// the config resolver, which forbids naming one on a physical device — filter
+    /// them out themselves.
+    pub fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "switch" => CapabilityKind::Switch,
+            "brightness" => CapabilityKind::Brightness,
+            "color" => CapabilityKind::Color,
+            "color_temperature" => CapabilityKind::ColorTemperature,
+            "occupancy" => CapabilityKind::Occupancy,
+            "battery" => CapabilityKind::Battery,
+            "temperature" => CapabilityKind::Temperature,
+            "humidity" => CapabilityKind::Humidity,
+            "illuminance" => CapabilityKind::Illuminance,
+            "power" => CapabilityKind::Power,
+            "contact" => CapabilityKind::Contact,
+            "water_leak" => CapabilityKind::WaterLeak,
+            "smoke" => CapabilityKind::Smoke,
+            "ir_transmitter" => CapabilityKind::IrTransmitter,
+            "time_of_day" => CapabilityKind::TimeOfDay,
+            "sun_up" => CapabilityKind::SunUp,
+            _ => return None,
+        })
+    }
+
+    /// Whether a consumer can *write* this capability — i.e. some `Command`
+    /// exists that sets it. False for report-only capabilities (sensors, the
+    /// synthetic clock), for which
+    /// [`command_for_requested_change`](crate::engine::Engine) yields no command.
+    ///
+    /// The engine treats a write to one of these as a harmless no-op; a frontend
+    /// that can give the user a better answer (the REST API returns `422`) uses
+    /// this to reject at the edge instead.
+    pub fn is_writable(self) -> bool {
+        matches!(
+            self,
+            CapabilityKind::Switch
+                | CapabilityKind::Brightness
+                | CapabilityKind::Color
+                | CapabilityKind::ColorTemperature
+                | CapabilityKind::IrTransmitter
+        )
+    }
 }
 
 /// State lives on capabilities, not devices — this avoids one giant
@@ -171,6 +240,56 @@ impl CapabilityState {
     }
 }
 
+/// What a consumer *asked for* — the northbound intent vocabulary.
+///
+/// Northbound adapters speak this and never construct a `Command`: the engine
+/// keeps sole ownership of the intent→command translation
+/// (`Engine::command_for_requested_change`), so REST, Matter, and any future
+/// frontend cannot drift in how they interpret a tap.
+///
+/// `Toggle` and `AdjustBrightness` are *relative* intents: they are lowered to
+/// the corresponding relative `Command` and resolved against the store at
+/// dispatch time by `Engine::resolve_implicit_state_command`. Resolving them in
+/// the adapter would race with in-flight state.
+///
+/// Scene activation is deliberately **not** a variant here: a scene is not
+/// device-scoped, and every variant of this enum accompanies a `DeviceId` in
+/// [`Event::RequestedChange`]. It is the sibling [`Event::RequestedScene`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Desired {
+    /// A concrete value for one capability.
+    Set(CapabilityState),
+    /// Flip a switch.
+    Toggle,
+    /// Nudge brightness by a signed delta in percentage points.
+    AdjustBrightness(i8),
+    /// Send a pre-learned IR code (base64) via an IR blaster.
+    ///
+    /// The odd one out: `IrTransmitter` is write-only and has no
+    /// [`CapabilityState`], so this intent can't be expressed as a `Set`. It
+    /// exists because an adapter's only inbound channel is `tick -> Vec<Event>`,
+    /// so a frontend has no other way to reach `Command::SendIrCode` — config
+    /// lowers `send_ir_code` to that command at compile time, a path the network
+    /// cannot take.
+    SendIr(String),
+}
+
+impl Desired {
+    /// The capability this intent concerns. Used by the engine to re-fan the
+    /// store's settled value to northbound mirrors after a request.
+    pub fn kind(&self) -> CapabilityKind {
+        match self {
+            Desired::Set(state) => state.kind(),
+            Desired::Toggle => CapabilityKind::Switch,
+            Desired::AdjustBrightness(_) => CapabilityKind::Brightness,
+            // No `CapabilityState` is ever stored under this kind, so the
+            // engine's post-request re-fan simply finds nothing and no-ops —
+            // correct for a write-only capability.
+            Desired::SendIr(_) => CapabilityKind::IrTransmitter,
+        }
+    }
+}
+
 /// A timer's identity. Named so that one rule can cancel a timer another rule
 /// scheduled, and so the compiler can lint that every cancel matches a schedule.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -199,19 +318,29 @@ pub enum Event {
     },
     /// A consumer *requested* a device change — the canonical inbound path for a
     /// northbound adapter (a Matter controller writing a cluster attribute, a
-    /// REST call, a web toggle). It is a desired *state*, not a report: the engine
+    /// REST call, a web toggle). It is an *intent*, not a report: the engine
     /// translates it into the same `Command` a rule would emit (see
     /// `Engine::command_for_requested_change`) and dispatches it, so a request
     /// from an app and a physical wall switch are indistinguishable to the engine.
     /// Unlike `StateReported`, it does **not** fold into the store on its own —
     /// the device's own echo does that.
     ///
-    /// Not every `CapabilityState` is writable (a battery level, time-of-day, or
-    /// sun state has no command); such a request has no effect and is dropped.
-    RequestedChange {
-        device: DeviceId,
-        desired: CapabilityState,
-    },
+    /// The payload is a [`Desired`], not a bare `CapabilityState`, so the network
+    /// can express the *relative* intents a rule can (toggle, brightness nudge)
+    /// without an adapter resolving them against state itself — which would race
+    /// with in-flight commands. Matter only ever sends `Desired::Set`.
+    ///
+    /// Not every capability is writable (a battery level, time-of-day, or sun
+    /// state has no command); such a request has no effect and is dropped.
+    RequestedChange { device: DeviceId, desired: Desired },
+    /// A consumer requested a scene activation. Scenes are not device-scoped, so
+    /// this is a sibling of [`Event::RequestedChange`] rather than a [`Desired`]
+    /// variant — every `Desired` accompanies a `DeviceId`, and a scene has none.
+    ///
+    /// Like `RequestedChange` it is an intent: it dispatches
+    /// `Command::ActivateScene` (whose expansion already happens in
+    /// `Engine::dispatch_at`), folds nothing, and runs no rule matching.
+    RequestedScene { scene: SceneId },
     /// Emitted by the scheduler when a wall-clock schedule comes due.
     TimeReached { schedule: ScheduleId },
     /// Emitted by the scheduler when a relative timer elapses.

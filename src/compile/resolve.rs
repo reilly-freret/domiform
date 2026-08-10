@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use crate::adapters::plugin_for;
-use crate::compile::ast::{RawConfig, RawHealthcheck, RawSchedule};
+use crate::compile::ast::{RawConfig, RawHealthcheck, RawRestApi, RawSchedule};
 use crate::compile::diagnostic::{CompileErrors, Diagnostic};
 use crate::compile::lower::Lowerer;
 use crate::ids::{ActionId, AdapterIdx, DeviceId, RuleId, SceneId, ScheduleId};
@@ -52,6 +52,7 @@ pub struct SystemConfig {
     /// file's directory as the default base.
     pub runtime_storage_path: Option<String>,
     pub healthcheck: Option<RawHealthcheck>,
+    pub rest_api: Option<RawRestApi>,
 }
 
 impl SystemConfig {
@@ -193,23 +194,13 @@ impl CompiledConfig {
 /// `sun_up`) are deliberately absent: the clock adapter produces them, so naming
 /// one on a physical device is an error.
 pub(crate) fn parse_capability(s: &str) -> Option<CapabilityKind> {
-    Some(match s {
-        "switch" => CapabilityKind::Switch,
-        "brightness" => CapabilityKind::Brightness,
-        "color" => CapabilityKind::Color,
-        "color_temperature" => CapabilityKind::ColorTemperature,
-        "occupancy" => CapabilityKind::Occupancy,
-        "battery" => CapabilityKind::Battery,
-        "temperature" => CapabilityKind::Temperature,
-        "humidity" => CapabilityKind::Humidity,
-        "illuminance" => CapabilityKind::Illuminance,
-        "power" => CapabilityKind::Power,
-        "contact" => CapabilityKind::Contact,
-        "water_leak" => CapabilityKind::WaterLeak,
-        "smoke" => CapabilityKind::Smoke,
-        "ir_transmitter" => CapabilityKind::IrTransmitter,
-        _ => return None,
-    })
+    match CapabilityKind::from_name(s)? {
+        // `from_name` is the full wire vocabulary, which includes the synthetic
+        // clock capabilities. Naming one on a physical device is an error, so
+        // they are filtered back out here rather than in the shared table.
+        CapabilityKind::TimeOfDay | CapabilityKind::SunUp => None,
+        kind => Some(kind),
+    }
 }
 
 pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
@@ -601,6 +592,7 @@ fn system_config(raw: &RawConfig, diags: &mut Vec<Diagnostic>) -> SystemConfig {
         longitude: raw.system.longitude.unwrap_or(0.0),
         runtime_storage_path: raw.system.runtime_storage_path.clone(),
         healthcheck: raw.system.healthcheck.clone(),
+        rest_api: raw.system.rest_api.clone(),
     }
 }
 

@@ -11,7 +11,7 @@ use domiform::adapters::matter_device::{
     MatterDeviceType,
 };
 use domiform::ids::DeviceId;
-use domiform::model::{CapabilityKind, CapabilityState, Millis};
+use domiform::model::{CapabilityKind, CapabilityState, Desired, Millis};
 use domiform::{build_engine, compile_str, Adapter, Engine, Event, Observer};
 
 const LIGHT: DeviceId = DeviceId(7);
@@ -203,15 +203,15 @@ fn a_controller_color_write_becomes_a_requested_change_on_tick() {
         vec![
             Event::RequestedChange {
                 device: LIGHT,
-                desired: CapabilityState::Color {
+                desired: Desired::Set(CapabilityState::Color {
                     r: 0,
                     g: 128,
                     b: 255
-                },
+                }),
             },
             Event::RequestedChange {
                 device: LIGHT,
-                desired: CapabilityState::ColorTemperature(300),
+                desired: Desired::Set(CapabilityState::ColorTemperature(300)),
             },
         ]
     );
@@ -236,7 +236,7 @@ fn a_controller_write_becomes_a_requested_change_on_tick() {
         events,
         vec![Event::RequestedChange {
             device: LIGHT,
-            desired: CapabilityState::Switch(true),
+            desired: Desired::Set(CapabilityState::Switch(true)),
         }]
     );
     // Drained: a second tick yields nothing.

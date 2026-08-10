@@ -17,7 +17,12 @@
 //! | `matter.rs` | [`MatterAdapter`] — Matter via `python-matter-server` |
 //! | `matter_device/` | [`MatterDeviceAdapter`] — northbound: expose devices as a Matter bridge |
 //! | `zwavejs.rs` | [`ZwaveAdapter`] — Z-Wave via `zwave-js-server` |
+//! | `rest_api/` | [`RestApiAdapter`] — northbound: a read/write HTTP API |
 //! | `mock_northbound.rs` | [`MockNorthbound`] — in-memory northbound seam (tests) |
+//!
+//! Note that `rest_api` is **not** in [`plugins`]: like [`ClockAdapter`], it is
+//! configured from the `system` stanza rather than the `adapters` map, so the
+//! host constructs it directly. See its module docs for why.
 //!
 //! **To add a protocol adapter** (Z-Wave, Matter, ESPHome, …): add a module
 //! here, implement [`Adapter`] for its runtime type and [`AdapterPlugin`] for a
@@ -33,6 +38,7 @@ pub mod matter_device;
 mod mock;
 pub mod mock_northbound;
 mod plugin;
+pub mod rest_api;
 mod scheduler;
 mod virtual_device;
 pub mod zigbee2mqtt;
@@ -47,6 +53,9 @@ pub use matter_device::{
 pub use mock::MockDeviceAdapter;
 pub use mock_northbound::{MockNorthbound, MockNorthboundState};
 pub use plugin::{config_of, AdapterPlugin, ExposeSpec, NorthboundCtx, Polarity};
+pub use rest_api::{
+    Directory, Inbound, RestApiAdapter, RestApiHandle, RestApiObserver, RestApiServer, RuleStatus,
+};
 // `NorthboundAdapter` is defined below (needs `Adapter` + `Observer` in scope).
 pub use scheduler::SchedulerAdapter;
 pub use virtual_device::VirtualDeviceAdapter;

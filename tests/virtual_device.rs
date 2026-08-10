@@ -6,7 +6,7 @@
 
 use domiform::adapters::matter_device::{ExposedDevice, InMemoryMatter, MatterDeviceAdapter};
 use domiform::ids::DeviceId;
-use domiform::model::{CapabilityKind, CapabilityState, Command, Millis};
+use domiform::model::{CapabilityKind, CapabilityState, Command, Desired, Millis};
 use domiform::{Adapter, DispatchOutcome, Event, VirtualDeviceAdapter};
 
 const AC: DeviceId = DeviceId(3);
@@ -98,7 +98,7 @@ rules:
     // event directly so the test needs no live node.
     engine.inject(Event::RequestedChange {
         device: ac,
-        desired: CapabilityState::Switch(true),
+        desired: Desired::Set(CapabilityState::Switch(true)),
     });
 
     // The switch is now on (the virtual adapter echoed it and the engine folded it).

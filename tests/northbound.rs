@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use domiform::ids::DeviceId;
-use domiform::model::{CapabilityState, Millis};
+use domiform::model::{CapabilityState, Desired, Millis};
 use domiform::{
     build_engine, compile_str, Adapter, Command, DispatchOutcome, Engine, Event, MockNorthbound,
 };
@@ -79,7 +79,7 @@ fn command_echo_reaches_the_mirror() {
 
     engine.inject(Event::RequestedChange {
         device: LIGHT,
-        desired: CapabilityState::Brightness(60),
+        desired: Desired::Set(CapabilityState::Brightness(60)),
     });
 
     assert_eq!(
