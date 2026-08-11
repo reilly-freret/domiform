@@ -2,18 +2,23 @@
 #
 # The REST API: a read/write HTTP surface over the running engine.
 #
-#   GET  /system                     engine time, timezone, counts
-#   GET  /devices                    every device and its current state
-#   GET  /devices/{name}             one device
-#   POST /devices/{name}/intent      set / toggle / adjust_brightness / send_ir_code
-#   GET  /scenes                     every scene
-#   POST /scenes/{name}/activate     run a scene
-#   GET  /rules                      per-rule truth + fire counts (debugging)
+#   GET  /system                          engine time, timezone, counts
+#   GET  /devices                         every device, its state and its events
+#   GET  /devices/{name}                  one device
+#   POST /devices/{name}/intent           set / toggle / adjust_brightness / send_ir_code
+#   POST /devices/{name}/events/{event}   fire a declared event (see api_events.yaml)
+#   GET  /scenes, /scenes/{name}          every scene, with its commands
+#   POST /scenes/{name}/activate          run a scene
+#   GET  /rules, /rules/{name}            each rule's trigger, then-clause,
+#                                         truth and fire count (debugging)
+#   GET  /stream                          server-sent events: a snapshot, then
+#                                         state / rule / action / command_failed
 #
-# SECURITY: the API is UNAUTHENTICATED in v1. Anyone who can open a TCP
-# connection to the port can control the devices, so `host` is 127.0.0.1 here —
-# reachable only from this machine. To expose it on a network, put an
-# authenticating reverse proxy (Caddy/nginx with basic auth or mTLS) in front.
+# SECURITY: with no `token` set the API is UNAUTHENTICATED — anyone who can open
+# a TCP connection to the port can control the devices. So `host` is 127.0.0.1
+# here, reachable only from this machine. To expose it on a network, set a token
+# (every route then requires `Authorization: Bearer <token>`, reads included) or
+# put an authenticating reverse proxy in front of it.
 #
 # This example uses `type: mock` adapters, so it runs with no broker or radio:
 #
@@ -21,6 +26,7 @@
 #   curl localhost:8020/devices
 #   curl -X POST localhost:8020/devices/desk_lamp/intent -d '{"toggle":{}}'
 #   curl -X POST localhost:8020/scenes/evening/activate
+#   curl -N localhost:8020/stream          # watch state change live
 system:
   timezone: America/New_York
   latitude: 40.71
@@ -28,6 +34,8 @@ system:
   rest_api:
     host: "127.0.0.1"
     port: 8020
+    # Uncomment to require a bearer token on every route:
+    # token: "change-me"
 
 adapters:
   bench:

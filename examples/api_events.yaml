@@ -1,0 +1,112 @@
+# yaml-language-server: $schema=../schema/domiform.schema.json
+#
+# API-driven automations: rules whose trigger is an HTTP call rather than a
+# physical button.
+#
+# The key idea is that `events:` is not tied to hardware. It declares a *name*
+# that interns to an identity rules trigger on; a southbound adapter normally
+# resolves a raw protocol string to it, but nothing requires that any adapter
+# ever produce one. So a device on the `virtual` adapter with an `events:` map
+# and no capabilities at all is a pure API surface:
+#
+#   POST /devices/api/events/movie_mode
+#
+# reaches the engine as exactly the same `Action` event a wall switch would
+# produce, and the matching rule fires. There is no separate concept for this —
+# it is the ordinary event path, which is why it needs no new feature.
+#
+# This also shows *why* the API fires events rather than exposing a
+# "trigger this rule" endpoint. See `good_morning` / `good_night` below: they
+# share a trigger and are told apart only by their conditions. Firing the event
+# lets the engine pick the right one, exactly as it would for a real button; a
+# rule-trigger endpoint would force the client to know which of the pair to call.
+#
+#   cargo run -- -c examples/api_events.yaml -v
+#   curl -X POST localhost:8020/devices/api/events/movie_mode
+#   curl -X POST localhost:8020/devices/api/events/good_day
+#   curl localhost:8020/rules/good_night   # its trigger, then-clause and truth
+#   curl -N localhost:8020/stream          # watch it all happen live
+#
+# A note on `last_truth: "unknown"`, which you will see on the pair below until
+# something establishes the lamp's switch state: conditions are three-valued, so
+# a capability the engine has never heard about is neither true nor false and
+# *neither* rule fires. `set_brightness` does not imply a switch report — a real
+# bulb reports the two independently. `GET /rules/{name}` is the fastest way to
+# see this; it is the main reason that endpoint reports `last_truth` at all.
+system:
+  timezone: America/New_York
+  latitude: 40.71
+  longitude: -74.01
+  rest_api:
+    host: "127.0.0.1"
+    port: 8020
+
+adapters:
+  bench:
+    type: mock
+  # Devices on this adapter have no physical backing. Here it hosts nothing but
+  # an events map — the automation surface itself.
+  synthetic:
+    type: virtual
+
+devices:
+  living_room_lamp:
+    adapter: bench
+    address: living_room_lamp
+    room: living_room
+    capabilities: [switch, brightness]
+
+  hallway_lamp:
+    adapter: bench
+    address: hallway_lamp
+    room: hallway
+    capabilities: [switch, brightness]
+
+  # The API surface. No `capabilities:` at all — it is never read, only fired at.
+  # `GET /devices` reports it with an empty `capabilities` object and its three
+  # declared events, and the event endpoint validates against those alone.
+  api:
+    adapter: synthetic
+    events:
+      movie_mode: movie_mode
+      toggle_lights: toggle_lights
+      good_day: good_day
+
+rules:
+  movie_mode:
+    when: { event: api.movie_mode }
+    then:
+      # `turn_on` is a concrete set, so it establishes a known switch state —
+      # which is what lets the condition pair below discriminate afterwards.
+      - turn_on: living_room_lamp
+      - set_brightness: { device: living_room_lamp, value: 15 }
+      - turn_off: hallway_lamp
+
+  # A pair sharing one trigger, disambiguated purely by condition. One POST to
+  # `api.toggle_lights` fires whichever one applies.
+  good_morning:
+    when: { event: api.good_day }
+    if: { switch: { device: living_room_lamp, is_on: false } }
+    then:
+      - set_brightness: { device: living_room_lamp, value: 100 }
+      - set_brightness: { device: hallway_lamp, value: 60 }
+
+  good_night:
+    when: { event: api.good_day }
+    if: { switch: { device: living_room_lamp, is_on: true } }
+    then:
+      - turn_off: living_room_lamp
+      - turn_off: hallway_lamp
+
+  # A plain toggle, for the simplest possible shortcut target.
+  #
+  # Worth knowing when you try this against `mock`: a `toggle` against an
+  # *unknown* switch reaches the adapter as a raw `ToggleSwitch` (the engine only
+  # resolves it to a concrete `SetSwitch` when it knows the current value), and
+  # `mock` echoes concrete sets only. So the first toggle here leaves `switch`
+  # null. Fire `movie_mode` first — its `turn_off` is concrete, so it establishes
+  # a known state and the condition pair above starts discriminating.
+  toggle_lights:
+    when: { event: api.toggle_lights }
+    then:
+      - toggle: living_room_lamp

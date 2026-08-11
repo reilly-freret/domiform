@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value};
 use crate::model::{CapabilityKind, Desired};
 
 use super::json::{capabilities_object, state_from_json};
-use super::{DeviceEntry, Directory, Inbound, RestApiHandle};
+use super::{describe, DeviceEntry, Directory, Inbound, RestApiHandle};
 
 /// A routed response. `body` is always JSON.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,9 +67,14 @@ pub fn handle(
         ["devices"] => get_only(method, || devices(directory, handle)),
         ["devices", name] => get_only(method, || device(directory, handle, name)),
         ["devices", name, "intent"] => post_only(method, || intent(directory, handle, name, body)),
+        ["devices", name, "events", event] => {
+            post_only(method, || fire_event(directory, handle, name, event))
+        }
         ["scenes"] => get_only(method, || scenes(directory)),
+        ["scenes", name] => get_only(method, || scene(directory, name)),
         ["scenes", name, "activate"] => post_only(method, || activate(directory, handle, name)),
         ["rules"] => get_only(method, || rules(directory, handle)),
+        ["rules", name] => get_only(method, || rule(directory, handle, name)),
         _ => Response::error(404, "unknown_route", format!("no route for '{path}'")),
     }
 }
@@ -127,16 +132,27 @@ fn device_json(entry: &DeviceEntry, handle: &RestApiHandle) -> Value {
         "capabilities": capabilities_object(&entry.capabilities, |kind| {
             handle.state(entry.id, kind)
         }),
+        // Declared event names, in config order. The `raw:` protocol string each
+        // maps to is an adapter implementation detail and stays off the wire.
+        "events": entry.events.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
     })
 }
 
+/// Every device, rendered. Shared by `GET /devices` and the stream's opening
+/// `snapshot` frame, so a subscriber's first view and a plain `GET` cannot
+/// disagree about shape.
+pub fn devices_value(directory: &Directory, handle: &RestApiHandle) -> Value {
+    Value::Array(
+        directory
+            .devices
+            .iter()
+            .map(|d| device_json(d, handle))
+            .collect(),
+    )
+}
+
 fn devices(directory: &Directory, handle: &RestApiHandle) -> Response {
-    let devices: Vec<Value> = directory
-        .devices
-        .iter()
-        .map(|d| device_json(d, handle))
-        .collect();
-    Response::json(200, json!({ "devices": devices }))
+    Response::json(200, json!({ "devices": devices_value(directory, handle) }))
 }
 
 fn device(directory: &Directory, handle: &RestApiHandle, name: &str) -> Response {
@@ -146,49 +162,128 @@ fn device(directory: &Directory, handle: &RestApiHandle, name: &str) -> Response
     }
 }
 
+/// One scene object, shared by `GET /scenes` and `GET /scenes/{name}`.
+///
+/// `commands` (the member count) is retained alongside the rendered `then` so v1
+/// clients reading the count do not break.
+fn scene_json(directory: &Directory, entry: &super::SceneEntry) -> Value {
+    json!({
+        "name": entry.name,
+        "commands": entry.commands.len(),
+        "then": describe::commands(directory, &entry.commands),
+    })
+}
+
 fn scenes(directory: &Directory) -> Response {
     let scenes: Vec<Value> = directory
         .scenes
         .iter()
-        .map(|s| json!({ "name": s.name, "commands": s.commands }))
+        .map(|s| scene_json(directory, s))
         .collect();
     Response::json(200, json!({ "scenes": scenes }))
+}
+
+fn scene(directory: &Directory, name: &str) -> Response {
+    match directory.scene(name) {
+        Some(entry) => Response::json(200, scene_json(directory, entry)),
+        None => unknown_scene(name),
+    }
+}
+
+/// One rule object: its static shape from config, merged with its runtime status
+/// from the mirror. The two come from different sources — `Directory` and
+/// `RuleStatus` — but a client wants them as one object.
+fn rule_json(directory: &Directory, handle: &RestApiHandle, rule: &crate::rule::Rule) -> Value {
+    let status = handle.rule_status(rule.id);
+    let mut value = describe::rule_shape(directory, rule);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "last_considered_ms".into(),
+            json!(status.last_considered_ms),
+        );
+        obj.insert(
+            "last_truth".into(),
+            json!(status.last_truth.map(truth_name)),
+        );
+        obj.insert("last_fired_ms".into(), json!(status.last_fired_ms));
+        obj.insert("fire_count".into(), json!(status.fire_count));
+    }
+    value
 }
 
 fn rules(directory: &Directory, handle: &RestApiHandle) -> Response {
     let rules: Vec<Value> = directory
         .rules
         .iter()
-        .map(|(id, name)| {
-            let status = handle.rule_status(*id);
-            json!({
-                "name": name,
-                "last_considered_ms": status.last_considered_ms,
-                "last_truth": status.last_truth.map(truth_name),
-                "last_fired_ms": status.last_fired_ms,
-                "fire_count": status.fire_count,
-            })
-        })
+        .map(|r| rule_json(directory, handle, r))
         .collect();
     Response::json(200, json!({ "rules": rules }))
 }
 
-/// The wire spelling of the three-valued `Truth`.
-fn truth_name(truth: crate::rule::Truth) -> &'static str {
-    match truth {
-        crate::rule::Truth::True => "true",
-        crate::rule::Truth::False => "false",
-        crate::rule::Truth::Unknown => "unknown",
+fn rule(directory: &Directory, handle: &RestApiHandle, name: &str) -> Response {
+    match directory.rule(name) {
+        Some(entry) => Response::json(200, rule_json(directory, handle, entry)),
+        None => Response::error(404, "unknown_rule", format!("no rule named '{name}'")),
     }
 }
+
+// `truth_name` lives in the parent module: `GET /rules` and the SSE stream both
+// spell `Truth` on the wire, and one table keeps them from disagreeing.
+use super::truth_name;
 
 // --- write endpoints ---------------------------------------------------------
 
 fn activate(directory: &Directory, handle: &RestApiHandle, name: &str) -> Response {
     let Some(entry) = directory.scene(name) else {
-        return Response::error(404, "unknown_scene", format!("no scene named '{name}'"));
+        return unknown_scene(name);
     };
     queue(handle, Inbound::Scene { scene: entry.id })
+}
+
+/// Fire one of a device's declared events. Empty body.
+///
+/// This is how the API reaches rules. The injected `Event::Action` is
+/// indistinguishable from the one the southbound adapter produces for a physical
+/// press, so the engine runs the full drain loop — rule matching, conditions,
+/// `for:` timers, cascades — and multi-stage behavior (an IR toggle that arms a
+/// timer whose rule sends a follow-up code) works end to end without the client
+/// knowing any of it.
+///
+/// Validation is against the device's declared `events:` **only**, deliberately
+/// independent of `capabilities:`: a device may declare events and no
+/// capabilities at all, which is the supported idiom for an API-driven
+/// automation surface.
+fn fire_event(directory: &Directory, handle: &RestApiHandle, name: &str, event: &str) -> Response {
+    let Some(entry) = directory.device(name) else {
+        return unknown_device(name);
+    };
+    let Some(action) = entry.action(event) else {
+        let declared = entry
+            .events
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Response::error(
+            404,
+            "unknown_event",
+            format!(
+                "device '{name}' declares no event '{event}' (it has: {})",
+                if declared.is_empty() {
+                    "no events"
+                } else {
+                    &declared
+                }
+            ),
+        );
+    };
+    queue(
+        handle,
+        Inbound::Action {
+            device: entry.id,
+            action,
+        },
+    )
 }
 
 fn intent(directory: &Directory, handle: &RestApiHandle, name: &str, body: &[u8]) -> Response {
@@ -227,6 +322,10 @@ fn queue(handle: &RestApiHandle, inbound: Inbound) -> Response {
 
 fn unknown_device(name: &str) -> Response {
     Response::error(404, "unknown_device", format!("no device named '{name}'"))
+}
+
+fn unknown_scene(name: &str) -> Response {
+    Response::error(404, "unknown_scene", format!("no scene named '{name}'"))
 }
 
 fn malformed(message: impl Into<String>) -> Response {

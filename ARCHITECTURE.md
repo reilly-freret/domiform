@@ -476,7 +476,15 @@ Adapters carry a `Polarity` (`adapters/plugin.rs`):
     goes to `self.observers` alone, so a northbound adapter that implements one will
     silently never be called. `rest_api` needs `rule_considered` for `GET /rules`, so
     it ships a second type (`RestApiObserver`) that the host registers with
-    `add_observer`; both write the same `Arc<Mutex<Mirror>>`.
+    `add_observer`; both write the same `Arc<Mutex<Mirror>>`. `GET /stream` sources
+    *all four* of its event types (`state`, `rule`, `action`, `command_failed`) from
+    that same observer for exactly this reason.
+  - **`Observer` callbacks run on the engine thread, inside `drain`** — and `notify`
+    has no unwind protection, so a panic in any observer kills the process. Anything
+    on that path must be panic-free and must never block on I/O. The SSE fan-out
+    obeys this by pushing onto a bounded per-subscriber queue and returning; a
+    writer thread per subscriber does the socket work, so a slow HTTP client stalls
+    only itself. See `adapters/rest_api/stream.rs`.
   - **`rest_api` is not in the `PLUGINS` registry.** It's configured from the
     `system` stanza rather than the `adapters` map — the same shape as `ClockAdapter`
     — because it's an instance-level control surface that lists everything, which

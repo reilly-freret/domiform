@@ -128,6 +128,12 @@ pub struct RawHealthcheck {
 pub struct RawRestApi {
     pub host: String,
     pub port: u16,
+    /// Optional bearer token. Absent leaves every route open (and the
+    /// non-loopback startup warning loud); present requires
+    /// `Authorization: Bearer <token>` on **every** route, reads included —
+    /// device state is itself sensitive, since it reveals whether anyone is home.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// One adapter entry: its `type` discriminator plus the remaining

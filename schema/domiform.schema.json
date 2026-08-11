@@ -78,9 +78,14 @@
               "minimum": 2000,
               "maximum": 65535,
               "description": "port of the REST API server."
+            },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "description": "optional bearer token. When set, every route requires an 'Authorization: Bearer <token>' header — reads included, since device state reveals whether anyone is home. When unset, the API is entirely open."
             }
           },
-          "description": "if provided, serve a read/write HTTP API on the given host and port. Unauthenticated: bind to 127.0.0.1 unless it sits behind an authenticating proxy."
+          "description": "if provided, serve a read/write HTTP API on the given host and port. Set `token` unless it binds to 127.0.0.1 or sits behind an authenticating proxy: without one, anyone who can reach the port can control your devices."
         }
       }
     },

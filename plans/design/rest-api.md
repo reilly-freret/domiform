@@ -1,6 +1,17 @@
 # Design: the REST API (`system.rest_api`)
 
 Status: **IMPLEMENTED** (see §13 for where the build deviated from this plan).
+**Superseded in part by [`rest-api-v2.md`](./rest-api-v2.md)**, which adds device
+events, rule/scene introspection, an SSE stream, and optional bearer auth. Three
+things this document states are no longer true:
+
+- §11 lists streaming as out of scope — v2 §6 implements it at `GET /stream`.
+- §2/§9 state there is no authentication — v2 §7 adds an optional `token`.
+- §7's `GET /rules` and `GET /scenes` shapes gained fields (v2 §5); the v1 keys
+  are all retained, so v1 clients are unaffected.
+
+Everything else here, including the §1a constraint that shapes the whole design,
+still holds.
 Scope: an optional, read/write HTTP API over the running engine — list device
 state by config name, and submit commands (set/toggle/adjust a device, activate a
 scene) as structured JSON.

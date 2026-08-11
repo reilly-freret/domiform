@@ -174,27 +174,94 @@ system:
   rest_api:
     host: "127.0.0.1"
     port: 8020
+    token: "a-long-random-string"   # optional; see below
 ```
 
 See [`examples/rest_api.yaml`](./examples/rest_api.yaml) for a complete config you can run offline.
 
 > [!WARNING]
-> **The API is unauthenticated.** Every endpoint is reachable by anyone who can open a TCP
-> connection to the port, and the write endpoints control physical devices in your home. Bind
-> `127.0.0.1` (as above) unless it sits behind an authenticating reverse proxy — Caddy or nginx with
-> basic auth or mTLS is the supported way to expose it. Domiform logs a warning at startup if you
-> bind a non-loopback address. No CORS headers are sent, deliberately: that's what stops a web page
-> on another origin from driving your house.
+> **Without a `token`, the API is unauthenticated.** Every endpoint is reachable by anyone who can
+> open a TCP connection to the port, and the write endpoints control physical devices in your home.
+> Either set a token (below), or bind `127.0.0.1` and put an authenticating reverse proxy in front —
+> Caddy or nginx with basic auth or mTLS. Domiform logs a warning at startup if you bind a
+> non-loopback address with no token set. No CORS headers are sent, deliberately: that's what stops
+> a web page on another origin from driving your house.
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/system` | Engine time, timezone, version, counts |
-| `GET` | `/devices` | Every device and its current state |
+| `GET` | `/devices` | Every device, its state and its declared events |
 | `GET` | `/devices/{name}` | One device |
 | `POST` | `/devices/{name}/intent` | Set / toggle / adjust / send an IR code |
-| `GET` | `/scenes` | Every scene |
+| `POST` | `/devices/{name}/events/{event}` | Fire a declared event — the way to reach *rules* |
+| `GET` | `/scenes`, `/scenes/{name}` | Every scene, with its commands |
 | `POST` | `/scenes/{name}/activate` | Run a scene |
-| `GET` | `/rules` | Per-rule truth and fire counts |
+| `GET` | `/rules`, `/rules/{name}` | Each rule's trigger, then-clause, truth and fire count |
+| `GET` | `/stream` | Server-sent events: live state, rule fires, actions, failures |
+
+### Authentication
+
+`token` is optional to configure and mandatory to send once configured. Leave it out and every route
+is open; set it and *every* route requires a header — reads included, since device state reveals
+whether anyone is home:
+
+```
+Authorization: Bearer <token>
+```
+
+A missing or malformed header is `401`; a well-formed but wrong token is `403`. There is deliberately
+no `?token=` query form: credentials in query strings leak into proxy access logs, browser history
+and `Referer` headers. (The one real casualty is browser `EventSource`, which cannot set headers —
+proxy `/stream` through your app's server routes, which keeps the token out of the browser anyway.)
+
+### Firing events, and reaching your rules
+
+`POST /devices/{name}/events/{event}` injects the same event a physical button produces, so the
+engine runs the full rule path — conditions, `for:` timers, cascades and all:
+
+```zsh
+curl -X POST localhost:8020/devices/knob_a/events/click
+```
+
+This is how a client drives behavior that lives in your config without duplicating it. If a rule
+sends an IR code and arms a timer whose rule sends a follow-up, one POST gets you *both* stages; a
+client reconstructing the commands itself would silently get half. It also resolves rule pairs that
+share a trigger and differ only by their `if:` clause — the engine picks the right one, exactly as it
+would for the real button, so the client never has to know the pair exists.
+
+Events aren't tied to hardware. A device on the `virtual` adapter with an `events:` map and no
+capabilities at all is a pure API surface, which is how you write an automation triggered only by
+HTTP. See [`examples/api_events.yaml`](./examples/api_events.yaml).
+
+### Live updates with `/stream`
+
+`GET /stream` is a [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+endpoint, so a dashboard never has to poll. It opens with a `snapshot` of current state — subscribe
+once and you're correct from the first frame, with no lost-update race against a separate `GET` —
+then streams deltas:
+
+```
+event: snapshot
+data: {"devices":[{"name":"desk_lamp","capabilities":{"switch":true,…},"events":[]}, …]}
+
+event: state
+data: {"device":"desk_lamp","capability":"brightness","value":40}
+
+event: rule
+data: {"rule":"motion_lights","truth":"true","fired":true}
+
+event: action
+data: {"device":"knob_a","event":"click","depth":0}
+
+event: command_failed
+data: {"command":{"type":"set_switch","device":"desk_lamp","on":true},"reason":"timeout","attempts":3}
+```
+
+A slow client can't stall the engine: each subscriber has a bounded queue and its own writer thread,
+and one that stops reading has its oldest frames dropped and gets an `event: lagged` telling it to
+re-sync with `GET /devices`. On `action`, `depth: 0` means the event *started* a causal chain rather
+than arriving from a cascade — it does **not** distinguish a physical press from an API call, since
+those are identical by design.
 
 An intent body is exactly one of:
 
@@ -230,9 +297,11 @@ Errors all share one shape, with a machine-readable `code`:
 { "error": { "code": "unknown_device", "message": "no device named 'kitchen_lmap'" } }
 ```
 
-`400` is a malformed body, `404` an unknown device/scene/route, `405` a wrong method, and `422` a
-capability the device didn't declare or one that's read-only (you can't *set* a motion sensor's
-`occupancy` — it reports it).
+`400` is a malformed body; `401`/`403` are a missing and a wrong token; `404` an unknown
+device/event/scene/rule/route; `405` a wrong method; `422` a capability the device didn't declare or
+one that's read-only (you can't *set* a motion sensor's `occupancy` — it reports it); and `503` means
+too many concurrent connections or streams, which are budgeted separately so a wall of dashboard tabs
+can't starve ordinary requests.
 
 ## Development
 

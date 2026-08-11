@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use domiform::adapters::rest_api;
+use domiform::adapters::rest_api::{self, stream::Broadcaster};
 use domiform::{
     build_engine_with_waker_in, compile_str, wake_channel, Directory, RestApiServer, StderrObserver,
 };
@@ -297,15 +297,24 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // through the `Engine` itself — which is neither `Send` nor `Sync`. This pair
     // is cheap, so it's built unconditionally; nothing binds a socket unless the
     // config asked for it.
-    let (rest_adapter, rest_observer, rest_handle) = rest_api::channel(Some(waker.clone()));
+    let (rest_adapter, mut rest_observer, rest_handle) = rest_api::channel(Some(waker.clone()));
     // MUST be before `engine.start()`: `start` calls `sync_northbound_startup_state`,
     // which replays the current store into every northbound adapter. Registering
     // afterwards would leave the mirror silently empty, so an early `GET` would
     // report `null` for values the engine already knows.
     engine.add_northbound(Box::new(rest_adapter));
-    // The observer half, for `GET /rules`. Both registrations are required: the
-    // engine fans only `state_folded` to northbound adapters, so `rule_considered`
-    // arrives solely through the ordinary observer list. They share one mirror.
+
+    // The SSE fan-out, shared between the observer (which pushes frames from the
+    // engine thread) and the HTTP server (whose stream connections pop them).
+    let broadcaster = Broadcaster::default();
+    let directory = Arc::new(Directory::from_config(&cfg));
+    // Give the observer the fan-out and the name tables. All four streamed event
+    // types — state, rule, action, command_failed — arrive through the *observer*
+    // list: the engine fans only `state_folded` to northbound adapters, so an
+    // adapter implementing the others would silently never be called.
+    rest_observer.with_stream(broadcaster.clone(), Arc::clone(&directory));
+    // The observer half, for `GET /rules` and the stream. Both registrations are
+    // required, and they share one mirror.
     engine.add_observer(Box::new(rest_observer));
 
     // The stderr observer always logs failures; `-v` adds the full trace. Hand it
@@ -348,9 +357,10 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // as the healthcheck.
     let rest_api = RestApiServer::new(
         cfg.system.rest_api.clone(),
-        Arc::new(Directory::from_config(&cfg)),
+        directory,
         rest_handle,
         shutdown.clone(),
+        broadcaster.clone(),
     );
     if let Err(e) = rest_api.start() {
         eprintln!("failed to start rest_api server: {e}");
@@ -371,6 +381,11 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
                         // shutdown flag and break out promptly
                         healthcheck.self_connect();
                         rest_api.self_connect();
+                        // Stream writers block on the broadcaster's condvar, not
+                        // on `accept`, so `self_connect` does not reach them.
+                        // Without this they would sit until their keepalive
+                        // timeout and hold the process open.
+                        broadcaster.shutdown();
                         waker.wake();
                     }
                 })

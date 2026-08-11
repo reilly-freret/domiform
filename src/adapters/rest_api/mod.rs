@@ -53,17 +53,19 @@ use std::sync::mpsc::{channel as mpsc_channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::compile::resolve::CompiledConfig;
-use crate::ids::{DeviceId, RuleId, SceneId};
+use crate::ids::{ActionId, DeviceId, RuleId, SceneId, ScheduleId};
 use crate::model::{CapabilityKind, CapabilityState, Command, Desired, Event, Millis};
 use crate::observe::Observer;
-use crate::rule::Truth;
+use crate::rule::{Rule, Truth};
 use crate::wake::Waker;
 
 use super::{Adapter, DispatchOutcome};
 
+pub mod describe;
 pub mod http;
 pub mod json;
 pub mod routes;
+pub mod stream;
 
 pub use http::RestApiServer;
 pub use routes::{handle, Response};
@@ -96,8 +98,24 @@ pub struct RuleStatus {
 /// A consumer request crossing from an HTTP thread into the engine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Inbound {
-    Device { device: DeviceId, desired: Desired },
-    Scene { scene: SceneId },
+    Device {
+        device: DeviceId,
+        desired: Desired,
+    },
+    Scene {
+        scene: SceneId,
+    },
+    /// Fire one of a device's declared events — indistinguishable, once it
+    /// reaches the queue, from the physical button press that normally produces
+    /// it. This is how the API reaches *rules*: rather than exposing a
+    /// rule-trigger endpoint (which would be ambiguous about the `if:` clause
+    /// for rules disambiguated solely by their conditions), a consumer fires the
+    /// event and the engine selects the matching rule exactly as it would for
+    /// the real button.
+    Action {
+        device: DeviceId,
+        action: ActionId,
+    },
 }
 
 /// Take a mutex guard, recovering from poisoning rather than propagating a panic
@@ -143,6 +161,33 @@ impl Observer for RestApiAdapter {
 /// delivered the update.
 pub struct RestApiObserver {
     shared: Arc<Mutex<Mirror>>,
+    /// The SSE fan-out. Also the reason this type resolves names: a frame carries
+    /// `"device": "kitchen_lamp"`, not `DeviceId(2)`.
+    ///
+    /// `None` until [`RestApiObserver::with_stream`] is called, so a host that
+    /// does not serve the stream pays nothing — and, importantly, so the
+    /// `Directory` (built from the config after the channel is constructed) can
+    /// be attached later without reordering the host's startup sequence.
+    stream: Option<(stream::Broadcaster, Arc<Directory>)>,
+}
+
+impl RestApiObserver {
+    /// Attach the SSE fan-out. Called by the host once the `Directory` exists.
+    /// Without this the observer still maintains the mirror for `GET /rules`;
+    /// it simply broadcasts nothing.
+    pub fn with_stream(&mut self, broadcaster: stream::Broadcaster, directory: Arc<Directory>) {
+        self.stream = Some((broadcaster, directory));
+    }
+
+    /// Render and queue one frame, if the stream is attached.
+    ///
+    /// Runs on the **engine thread**: the closure does plain JSON assembly and
+    /// the broadcast is a mutex push. Nothing here may panic or block on I/O.
+    fn emit(&self, frame: impl FnOnce(&Directory) -> stream::Frame) {
+        if let Some((broadcaster, directory)) = &self.stream {
+            broadcaster.broadcast(frame(directory));
+        }
+    }
 }
 
 impl Observer for RestApiObserver {
@@ -153,15 +198,74 @@ impl Observer for RestApiObserver {
     ///
     /// [`Engine::advance`]: crate::engine::Engine::advance
     fn rule_considered(&mut self, rule: RuleId, truth: Truth, fired: bool) {
-        let mut mirror = lock(&self.shared);
-        let now = mirror.now;
-        let entry = mirror.rules.entry(rule).or_default();
-        entry.last_considered_ms = Some(now);
-        entry.last_truth = Some(truth);
-        if fired {
-            entry.last_fired_ms = Some(now);
-            entry.fire_count += 1;
+        {
+            let mut mirror = lock(&self.shared);
+            let now = mirror.now;
+            let entry = mirror.rules.entry(rule).or_default();
+            entry.last_considered_ms = Some(now);
+            entry.last_truth = Some(truth);
+            if fired {
+                entry.last_fired_ms = Some(now);
+                // Saturating: a `u64` fire count cannot realistically overflow,
+                // but this path runs on the engine thread and must not panic
+                // even in a debug build.
+                entry.fire_count = entry.fire_count.saturating_add(1);
+            }
         }
+        self.emit(|directory| {
+            stream::rule_frame(&directory.rule_name(rule), truth_name(truth), fired)
+        });
+    }
+
+    /// The stream's `state` events. This mirrors what [`RestApiAdapter`] does for
+    /// the read endpoints, but is fanned to the *observer* list — both see every
+    /// fold, and both write a projection, so there is no divergence.
+    fn state_folded(&mut self, device: DeviceId, state: &CapabilityState) {
+        self.emit(|directory| {
+            stream::state_frame(
+                &directory.device_name(device),
+                state.kind().name(),
+                json::state_to_json(state),
+            )
+        });
+    }
+
+    /// The stream's `action` events, filtered out of the full event feed.
+    ///
+    /// `depth` distinguishes a chain-starting event from a cascade-produced one.
+    /// It deliberately does *not* distinguish a physical press from an
+    /// API-injected one: both arrive at depth 0, which is the whole point of the
+    /// events surface.
+    fn event_received(&mut self, event: &Event, depth: u32) {
+        if let Event::Action { device, action } = event {
+            let (device, action) = (*device, *action);
+            self.emit(|directory| {
+                stream::action_frame(
+                    &directory.device_name(device),
+                    &directory.action_name(device, action),
+                    depth,
+                )
+            });
+        }
+    }
+
+    /// The stream's `command_failed` events — a device that went offline or
+    /// rejected a command, which the state stream alone would show only as
+    /// "nothing happened".
+    fn command_failed(&mut self, command: &Command, reason: &str, attempts: u32) {
+        self.emit(|directory| {
+            stream::command_failed_frame(describe::command(directory, command), reason, attempts)
+        });
+    }
+}
+
+/// The wire spelling of the three-valued `Truth`. Shared by `GET /rules` and the
+/// stream, so the two can never disagree.
+pub fn truth_name(truth: Truth) -> &'static str {
+    match truth {
+        Truth::True => "true",
+        Truth::False => "false",
+        Truth::Unknown => "unknown",
     }
 }
 
@@ -181,6 +285,10 @@ impl Adapter for RestApiAdapter {
             .map(|inbound| match inbound {
                 Inbound::Device { device, desired } => Event::RequestedChange { device, desired },
                 Inbound::Scene { scene } => Event::RequestedScene { scene },
+                // Enters the queue at depth 0 like any adapter-produced event, so
+                // cascade limits, `for:` timers and retries all apply unchanged —
+                // an API client cannot bypass the engine's backstops.
+                Inbound::Action { device, action } => Event::Action { device, action },
             })
             .collect()
     }
@@ -266,6 +374,7 @@ pub fn channel(waker: Option<Waker>) -> (RestApiAdapter, RestApiObserver, RestAp
         },
         RestApiObserver {
             shared: Arc::clone(&shared),
+            stream: None,
         },
         RestApiHandle {
             shared,
@@ -284,8 +393,28 @@ pub struct DeviceEntry {
     pub name: String,
     pub room: Option<String>,
     pub capabilities: Vec<CapabilityKind>,
+    /// Declared stateless events, in config order: the local name paired with its
+    /// interned identity. The `raw:` protocol string is deliberately **not**
+    /// carried — it is an implementation detail of the southbound adapter and
+    /// must not leak onto the wire.
+    ///
+    /// A device may declare events and no capabilities at all; that is the
+    /// supported idiom for an API-driven automation surface (a `virtual` device
+    /// whose events exist only to be POSTed), so nothing here may assume a
+    /// non-empty `capabilities`.
+    pub events: Vec<(String, ActionId)>,
     /// True for the synthetic clock device, which has no adapter or address.
     pub synthetic: bool,
+}
+
+impl DeviceEntry {
+    /// The interned identity of a declared event, by local name.
+    pub fn action(&self, name: &str) -> Option<ActionId> {
+        self.events
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, id)| *id)
+    }
 }
 
 /// The name↔id translation table, built once at startup from [`CompiledConfig`].
@@ -299,18 +428,26 @@ pub struct Directory {
     /// In config order.
     pub devices: Vec<DeviceEntry>,
     pub scenes: Vec<SceneEntry>,
-    pub rules: Vec<(RuleId, String)>,
+    /// The full compiled rules, not merely their names: `GET /rules` renders each
+    /// rule's trigger, condition and commands so a client can build UI from the
+    /// config rather than hardcoding it.
+    pub rules: Vec<Rule>,
+    /// Wall-clock schedule names, needed to render `Trigger::Time` back to the
+    /// name it was written under. (`TimerKey` needs no such table: it is a plain
+    /// `String` and so is already self-describing.)
+    pub schedules: Vec<(ScheduleId, String)>,
     device_by_name: HashMap<String, DeviceId>,
     scene_by_name: HashMap<String, SceneId>,
+    rule_by_name: HashMap<String, RuleId>,
 }
 
-/// One scene as the API presents it. `commands` is the member count, which is
-/// all `GET /scenes` reports.
+/// One scene as the API presents it.
 #[derive(Clone, Debug)]
 pub struct SceneEntry {
     pub id: SceneId,
     pub name: String,
-    pub commands: usize,
+    /// The scene's member commands, rendered in full by `GET /scenes`.
+    pub commands: Vec<Command>,
 }
 
 /// The name the synthetic clock device is exposed under. It is not in
@@ -328,6 +465,7 @@ impl Directory {
                 name: d.name.clone(),
                 room: d.metadata.room.clone(),
                 capabilities: d.capabilities.clone(),
+                events: d.events.iter().map(|e| (e.name.clone(), e.id)).collect(),
                 synthetic: false,
             })
             .collect();
@@ -340,6 +478,7 @@ impl Directory {
             name: CLOCK_DEVICE_NAME.to_string(),
             room: None,
             capabilities: vec![CapabilityKind::TimeOfDay, CapabilityKind::SunUp],
+            events: Vec::new(),
             synthetic: true,
         });
 
@@ -349,21 +488,28 @@ impl Directory {
             .map(|s| SceneEntry {
                 id: s.id,
                 name: s.name.clone(),
-                commands: s.commands.len(),
+                commands: s.commands.clone(),
             })
             .collect();
 
         let device_by_name = devices.iter().map(|d| (d.name.clone(), d.id)).collect();
         let scene_by_name = scenes.iter().map(|s| (s.name.clone(), s.id)).collect();
+        let rule_by_name = cfg.rules.iter().map(|r| (r.name.clone(), r.id)).collect();
 
         Directory {
             system_name: cfg.system.name.clone(),
             timezone: cfg.system.timezone.clone(),
             devices,
             scenes,
-            rules: cfg.rules.iter().map(|r| (r.id, r.name.clone())).collect(),
+            rules: cfg.rules.clone(),
+            schedules: cfg
+                .schedules
+                .iter()
+                .map(|s| (s.id, s.name.clone()))
+                .collect(),
             device_by_name,
             scene_by_name,
+            rule_by_name,
         }
     }
 
@@ -375,5 +521,60 @@ impl Directory {
     pub fn scene(&self, name: &str) -> Option<&SceneEntry> {
         let id = self.scene_by_name.get(name)?;
         self.scenes.iter().find(|s| s.id == *id)
+    }
+
+    pub fn rule(&self, name: &str) -> Option<&Rule> {
+        let id = self.rule_by_name.get(name)?;
+        self.rules.iter().find(|r| r.id == *id)
+    }
+
+    /// The config name of a device, for rendering an id back onto the wire.
+    /// Falls back to a synthetic `device#N` rather than failing: a describe path
+    /// must never panic (it runs on the engine thread when the stream renders).
+    pub fn device_name(&self, id: DeviceId) -> String {
+        self.devices
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| format!("device#{}", id.0))
+    }
+
+    pub fn scene_name(&self, id: SceneId) -> String {
+        self.scenes
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| format!("scene#{}", id.0))
+    }
+
+    pub fn rule_name(&self, id: RuleId) -> String {
+        self.rules
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| format!("rule#{}", id.0))
+    }
+
+    pub fn schedule_name(&self, id: ScheduleId) -> String {
+        self.schedules
+            .iter()
+            .find(|(sid, _)| *sid == id)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| format!("schedule#{}", id.0))
+    }
+
+    /// The local name of a device's declared event, for rendering
+    /// `Trigger::Action` and streamed actions back onto the wire.
+    pub fn action_name(&self, device: DeviceId, action: ActionId) -> String {
+        self.devices
+            .iter()
+            .find(|d| d.id == device)
+            .and_then(|d| {
+                d.events
+                    .iter()
+                    .find(|(_, id)| *id == action)
+                    .map(|(name, _)| name.clone())
+            })
+            .unwrap_or_else(|| format!("action#{}", action.0))
     }
 }
