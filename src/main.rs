@@ -139,21 +139,11 @@ fn expand_configs(patterns: &[String]) -> Result<Vec<String>, String> {
 }
 
 fn main() -> ExitCode {
-    // Initialize a `log` backend so libraries that log via the `log` crate — the
-    // `matter_device` adapter's rs-matter node in particular — reach the terminal.
-    // rs-matter prints its commissioning pairing code / QR at `info`, so default to
-    // `info` unless the user overrides `RUST_LOG`. domiform's own tracing still
-    // goes through `StderrObserver`, independent of this.
-    //
-    // `rs_matter::im::invoker=off`: during commissioning a controller *probes* the
-    // node by reading optional/manufacturer clusters it may not implement; rs-matter
-    // logs each miss at ERROR (`UnsupportedCluster`/`UnsupportedAttribute`). These
-    // are expected and harmless, so we silence that one target by default to keep
-    // the log readable. A `RUST_LOG` override still surfaces them when debugging.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,rs_matter::im::invoker=off"),
-    )
-    .init();
+    // Initialize a `log` backend so libraries and adapters that log via the `log`
+    // crate reach the terminal. Defaults to `info` unless the user overrides
+    // `RUST_LOG`. domiform's own tracing still goes through `StderrObserver`,
+    // independent of this.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = match parse_args() {
         Ok(a) => a,
@@ -282,7 +272,7 @@ fn run_engine(config: &str, verbose: bool) -> ExitCode {
     // A wake channel lets transports signal inbound I/O so the loop can block
     // instead of polling; hand each adapter a `Waker` clone via the engine build.
     let (waker, wakes) = wake_channel();
-    // Runtime state (e.g. the matter_device fabric store) defaults to living next
+    // Runtime state defaults to living next
     // to the config file, so it's stable no matter where domiform is launched.
     let config_dir = Path::new(config).parent().unwrap_or(Path::new("."));
     let mut engine = build_engine_with_waker_in(&cfg, Some(waker.clone()), config_dir);

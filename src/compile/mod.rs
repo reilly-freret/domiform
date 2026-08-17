@@ -125,8 +125,7 @@ pub fn build_engine_with_waker(cfg: &CompiledConfig, waker: Option<Waker>) -> En
 
 /// Like [`build_engine_with_waker`], but with the config file's directory used to
 /// resolve `system.runtime_storage_path`. This is what the real-time host uses so
-/// runtime state (the `matter_device` fabric store, …) lands next to the config,
-/// stable across working directories. Seeds the clock from the real wall clock.
+/// runtime state lands next to the config, stable across working directories. Seeds the clock from the real wall clock.
 pub fn build_engine_with_waker_in(
     cfg: &CompiledConfig,
     waker: Option<Waker>,
@@ -157,8 +156,8 @@ pub fn build_engine_at(cfg: &CompiledConfig, waker: Option<Waker>, boot_epoch_ms
 
 /// Like [`build_engine_at`], but with the directory used to resolve a relative or
 /// defaulted `system.runtime_storage_path` — the config file's own directory. The
-/// host (`main.rs`) passes this so runtime state (e.g. the `matter_device` fabric
-/// store) lands next to the config regardless of the process's working directory.
+/// host (`main.rs`) passes this so runtime state (e.g. an adapter's own store)
+/// lands next to the config regardless of the process's working directory.
 pub fn build_engine_full(
     cfg: &CompiledConfig,
     waker: Option<Waker>,

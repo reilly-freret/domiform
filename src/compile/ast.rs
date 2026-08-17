@@ -104,10 +104,10 @@ pub struct RawSystem {
     #[serde(default)]
     pub longitude: Option<f64>,
     /// Directory under which features that strictly require runtime state (e.g.
-    /// the `matter_device` adapter's Matter fabric/commissioning store) keep their
-    /// files. This is *runtime data*, not configuration — see the reproducibility
-    /// note in `docs/design/northbound-adapters.md`. When unset, the host defaults
-    /// it to the config file's own directory (stable regardless of cwd).
+    /// adapter-owned runtime stores) keep their files. This is *runtime data*, not
+    /// configuration — see the reproducibility note in
+    /// `plans/design/northbound-adapters.md`. When unset, the host defaults it to
+    /// the config file's own directory (stable regardless of cwd).
     #[serde(default)]
     pub runtime_storage_path: Option<String>,
     #[serde(default)]

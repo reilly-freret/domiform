@@ -1,13 +1,12 @@
 //! The `virtual` adapter: domiform-owned stateful devices with no physical
 //! backing. Two things to prove: (1) the echo contract — a state-setting command
 //! makes the device *be* that state; (2) the real motivating flow end-to-end — a
-//! controller (Apple Home) tapping a virtual switch fires an IR rule, so a
-//! stateless appliance gets a stateful tile.
+//! northbound consumer tapping a virtual switch fires an IR rule, so a stateless
+//! appliance gets a stateful tile.
 
-use domiform::adapters::matter_device::{ExposedDevice, InMemoryMatter, MatterDeviceAdapter};
 use domiform::ids::DeviceId;
-use domiform::model::{CapabilityKind, CapabilityState, Command, Desired, Millis};
-use domiform::{Adapter, DispatchOutcome, Event, VirtualDeviceAdapter};
+use domiform::model::{CapabilityState, Command, Desired, Millis};
+use domiform::{Adapter, DispatchOutcome, Event, MockNorthbound, VirtualDeviceAdapter};
 
 const AC: DeviceId = DeviceId(3);
 
@@ -52,8 +51,8 @@ fn a_virtual_device_echoes_commanded_state_as_a_report() {
 #[test]
 fn a_home_app_tap_on_a_virtual_switch_fires_an_ir_rule() {
     // Full wiring via the real compiler/engine: a virtual switch (`ac_power`)
-    // exposed to Matter, and a rule that sends an IR code when it turns on. A
-    // controller write flips the switch → the virtual adapter echoes it → the
+    // exposed northbound, and a rule that sends an IR code when it turns on. A
+    // consumer write flips the switch → the virtual adapter echoes it → the
     // rule fires → the IR blaster (a mock device) receives SendIrCode.
     use domiform::{build_engine, compile_str, Observer};
     use std::cell::RefCell;
@@ -64,7 +63,7 @@ fn a_home_app_tap_on_a_virtual_switch_fires_an_ir_rule() {
 adapters:
   z:       { type: mock }
   virtual: { type: virtual }
-  home:    { type: matter_device, expose: [ac_power] }
+  home:    { type: mock_northbound, expose: [ac_power] }
 devices:
   ir_blaster: { adapter: z, capabilities: [ir_transmitter] }
   ac_power:   { adapter: virtual, capabilities: [switch] }
@@ -93,9 +92,9 @@ rules:
     engine.add_observer(Box::new(recorder.clone()));
     engine.start();
 
-    // Simulate a controller (Apple Home) tapping the switch on. This is what the
-    // real Matter node's `poll` would surface; we inject the equivalent inbound
-    // event directly so the test needs no live node.
+    // Simulate a northbound consumer tapping the switch on. This is what a real
+    // bridge's `tick` would surface; we inject the equivalent inbound event
+    // directly so the test needs no live protocol.
     engine.inject(Event::RequestedChange {
         device: ac,
         desired: Desired::Set(CapabilityState::Switch(true)),
@@ -118,30 +117,34 @@ rules:
 // --- config surface ----------------------------------------------------------
 
 #[test]
-fn a_virtual_device_exposed_to_matter_compiles_and_builds() {
+fn a_virtual_device_exposed_northbound_compiles_and_mirrors() {
     use domiform::{build_engine, compile_str};
 
     let cfg = compile_str(
         r#"
 adapters:
   virtual: { type: virtual }
-  home:    { type: matter_device, expose: all }
+  home:    { type: mock_northbound, expose: all }
 devices:
   ac_power: { adapter: virtual, capabilities: [switch] }
 "#,
     )
     .expect("valid config");
 
-    let mut engine = build_engine(&cfg);
-    engine.start(); // must not panic (builds the Matter node for the virtual switch)
+    let ac = cfg.device_id("ac_power").unwrap();
 
-    // Sanity: the virtual switch mirrors outward like any exposed device.
-    let _ = MatterDeviceAdapter::new(
-        vec![ExposedDevice {
-            id: AC,
-            label: "ac_power".into(),
-            capabilities: vec![CapabilityKind::Switch],
-        }],
-        Box::<InMemoryMatter>::default(),
-    );
+    // Attach an inspectable northbound adapter alongside the one the config built,
+    // so we can assert what a consumer would actually see mirrored.
+    let mut engine = build_engine(&cfg);
+    let mirror = MockNorthbound::new();
+    engine.add_northbound(Box::new(mirror.clone()));
+    engine.start(); // must not panic
+
+    // The virtual switch mirrors outward like any exposed device.
+    engine.inject(Event::RequestedChange {
+        device: ac,
+        desired: Desired::Set(CapabilityState::Switch(true)),
+    });
+    assert_eq!(engine.switch_state(ac), Some(true));
+    assert_eq!(mirror.latest(ac), Some(CapabilityState::Switch(true)));
 }

@@ -36,10 +36,10 @@
 //!
 //! # Why it is configured from `system`, not the plugin registry
 //!
-//! Unlike `matter_device`, this adapter is **not** in `adapters::PLUGINS`. It is
-//! built from the `system.rest_api` stanza, exactly as [`ClockAdapter`] is built
-//! from `system` values. That is also the right semantic call: `matter_device` is
-//! a projection of a device *subset* and earns its `expose:` spec, whereas the
+//! Unlike the protocol adapters, this adapter is **not** in `adapters::PLUGINS`.
+//! It is built from the `system.rest_api` stanza, exactly as [`ClockAdapter`] is
+//! built from `system` values. That is also the right semantic call: an
+//! `expose:`-style adapter is a projection of a device *subset*, whereas the
 //! REST API is an instance-level control surface that lists everything and
 //! activates scenes — something `expose:` does not model.
 //!

@@ -98,7 +98,7 @@ pub struct Engine {
     state: StateStore,
     rules: Vec<Rule>,
     adapters: Vec<Box<dyn Adapter>>,
-    /// Northbound adapters (`matter_device`, …). Held separately from `adapters` because
+    /// Northbound adapters (`rest_api`, …). Held separately from `adapters` because
     /// they are driven on both paths: `tick`/`next_wake` like an adapter (to
     /// drain consumer input and schedule wakes) *and* `state_folded` like an
     /// observer (to mirror engine state outward). They bind no devices, so they
@@ -330,10 +330,9 @@ impl Engine {
                     self.dispatch_at(cmd, 1, depth);
                 }
                 // Reconcile the northbound projection with engine truth. A
-                // northbound adapter (e.g. the Matter node) optimistically flips
-                // its own attribute cell on the controller write *before* the
-                // device confirms — it must, since some protocols read that cell
-                // back mid-command (rs-matter's OnOff↔Level coupling). If the
+                // northbound adapter may optimistically flip its own mirrored
+                // value on the consumer write *before* the device confirms — it
+                // must, if its protocol reads that value back mid-command. If the
                 // device accepts, its echo folds the true value and corrects the
                 // cell anyway; but if the command failed (`dispatch` returned
                 // `Permanent`) or the device never echoes, the optimistic cell

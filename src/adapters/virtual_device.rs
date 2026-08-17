@@ -9,7 +9,7 @@
 //! when the switch changes) lives in rules, not here, keeping domiform's "logic is
 //! declarative" tenet intact.
 //!
-//! Paired with `matter_device`, this is how a stateless appliance gets a real,
+//! Paired with a northbound adapter, this is how a stateless appliance gets a real,
 //! tappable On/Off tile in Apple Home: expose a `virtual` switch, and a rule
 //! translates its changes into IR (see `examples/virtual_ac.yaml`).
 //!

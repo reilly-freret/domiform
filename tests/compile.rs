@@ -229,7 +229,7 @@ fn resolves_matter_adapter_url_and_endpoint() {
 }
 
 #[test]
-fn matter_device_needs_a_numeric_node_id() {
+fn matter_devices_need_a_numeric_node_id() {
     // A non-numeric address (E_BAD_ADDRESS) and a missing one (E_MISSING_ADDRESS),
     // plus a non-ws url (E_BAD_URL) — all caught in one pass.
     let bad: &str = r#"

@@ -15,7 +15,6 @@
 //! | `clock.rs` | [`ClockAdapter`] — synthetic time-of-day / sun device |
 //! | `zigbee2mqtt.rs` | [`Zigbee2MqttAdapter`] — zigbee2mqtt over MQTT |
 //! | `matter.rs` | [`MatterAdapter`] — Matter via `python-matter-server` |
-//! | `matter_device/` | [`MatterDeviceAdapter`] — northbound: expose devices as a Matter bridge |
 //! | `zwavejs.rs` | [`ZwaveAdapter`] — Z-Wave via `zwave-js-server` |
 //! | `rest_api/` | [`RestApiAdapter`] — northbound: a read/write HTTP API |
 //! | `mock_northbound.rs` | [`MockNorthbound`] — in-memory northbound seam (tests) |
@@ -34,7 +33,6 @@ use crate::model::{Command, Event, Millis};
 
 mod clock;
 pub mod matter;
-pub mod matter_device;
 mod mock;
 pub mod mock_northbound;
 mod plugin;
@@ -46,10 +44,6 @@ pub mod zwavejs;
 
 pub use clock::ClockAdapter;
 pub use matter::{AttrReport, ClusterCommand, EndpointId, MatterAdapter, MatterController, NodeId};
-pub use matter_device::{
-    capability_is_exposable, default_state_file, device_type_for, ExposedDevice, InMemoryMatter,
-    InMemoryMatterState, MatterDeviceAdapter, MatterDeviceType, MatterTransport,
-};
 pub use mock::MockDeviceAdapter;
 pub use mock_northbound::{MockNorthbound, MockNorthboundState};
 pub use plugin::{config_of, AdapterPlugin, ExposeSpec, NorthboundCtx, Polarity};
@@ -70,7 +64,6 @@ static PLUGINS: &[&dyn AdapterPlugin] = &[
     &zigbee2mqtt::PLUGIN,
     &matter::PLUGIN,
     &zwavejs::PLUGIN,
-    &matter_device::PLUGIN,
     &mock::PLUGIN,
     &mock_northbound::PLUGIN,
     &virtual_device::PLUGIN,
@@ -120,7 +113,7 @@ impl DispatchOutcome {
     }
 }
 
-/// A northbound adapter (e.g. `matter_device`, and later REST/web/voice): it both
+/// A northbound adapter (e.g. `rest_api`, and later web/voice): it both
 /// *observes* every folded state change (so it can mirror them outward) and is
 /// *ticked* so consumer input drains into inbound `Event`s. It binds no devices,
 /// so its `dispatch` is never called; the `Adapter` bound is for `tick` /

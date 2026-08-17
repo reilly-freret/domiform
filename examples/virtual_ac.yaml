@@ -1,13 +1,15 @@
 # yaml-language-server: $schema=../schema/domiform.schema.json
 #
 # Virtual device example: surface a "dumb", IR-only air conditioner as a real,
-# tappable On/Off tile in Apple Home.
+# stateful On/Off control.
 #
 # The AC can only be toggled by an IR remote and can't report its state, so we
 # model its power as a **virtual switch** (`ac_power`, on the `virtual` adapter).
 # domiform owns that switch's state; a rule turns each change into an IR pulse.
-# `matter_device` then exposes the virtual switch like any other — one tap in the
-# Home app flips `ac_power`, which fires the IR.
+# The REST API then exposes the virtual switch like any other device — one
+# `intent` call flips `ac_power`, which fires the IR:
+#
+#   curl -X POST localhost:8020/devices/ac_power/intent -d '{"set":{"switch":true}}'
 #
 # Known limitation: because IR is write-only, `ac_power` is domiform's *belief*
 # about the AC, not ground truth. If someone uses the OEM remote, the tile and the
@@ -16,7 +18,9 @@ system:
   timezone: America/New_York
   latitude: 40.71
   longitude: -74.01
-  runtime_storage_path: ./runtime
+  rest_api:
+    host: "127.0.0.1"
+    port: 8020
 
 adapters:
   z2m:
@@ -27,11 +31,6 @@ adapters:
   # Owns state for devices with no physical backing. Takes no config.
   virtual:
     type: virtual
-
-  # Exposes the virtual switch to Apple Home / Google / Alexa.
-  home:
-    type: matter_device
-    expose: [ac_power]
 
 devices:
   # A wall paddle: stateless, event-only (no capabilities).
@@ -48,13 +47,13 @@ devices:
     capabilities: [ir_transmitter]
 
   # The virtual switch that fronts the AC. Its `switch` state is domiform's, and
-  # `matter_device` exposes it as a normal On/Off accessory.
+  # the REST API exposes it as a normal On/Off device.
   ac_power:
     adapter: virtual
     capabilities: [switch]
 
 rules:
-  # A tap in Apple Home (or any controller) flips `ac_power`; fire the IR toggle on
+  # A tap from any consumer flips `ac_power`; fire the IR toggle on
   # either edge. (A toggle-only AC uses the same code both ways; an AC with discrete
   # on/off codes would send its `on` code here and its `off` code below.)
   ac_turned_on:
@@ -67,7 +66,7 @@ rules:
     then:
       - send_ir_code: { device: living_room_ir_blaster, code: "<base64-ac-toggle>" }
 
-  # The wall button toggles the *same* virtual switch, so the wall, the Home app,
+  # The wall button toggles the *same* virtual switch, so the wall, the API,
   # and domiform all agree on one state (single source of truth).
   wall_toggles_ac:
     when: { event: wall_button.press }

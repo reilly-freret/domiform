@@ -1,5 +1,12 @@
 # Design: `matter_device` reliability hardening
 
+> **REMOVED (2026-08-17).** The `matter_device` northbound adapter and the
+> `rs-matter` dependency were ripped out of the tree: upstream `rs-matter` bugs
+> made the live bridge unreliable, and the crate dominated compile time and
+> binary size. This document is retained as a **historical design record only** —
+> the code it describes no longer exists. Note that the *southbound* `matter`
+> adapter (`type: matter`, `url: ws://…:5580`) is unaffected and fully supported.
+
 Status: **IMPLEMENTED** (Tasks A–D landed on `language_improvements`; full suite +
 clippy green). See the "Implementation notes" section at the end for exactly what
 shipped and where. The body below is the original plan, retained as the design

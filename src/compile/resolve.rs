@@ -402,7 +402,7 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
 
     // --- whole-program lints ------------------------------------------------
     for (idx, adapter) in adapters.iter().enumerate() {
-        // A northbound adapter (matter_device, …) binds no devices by design — it
+        // A northbound adapter (rest_api, …) binds no devices by design — it
         // *exposes* them — so "unused" doesn't apply. Its own emptiness check is
         // "exposes nothing", handled with the expose validation below.
         let northbound = adapter
@@ -414,33 +414,6 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
                     .at(format!("adapter '{}'", adapter.name)),
             );
         }
-    }
-
-    // --- single-node limit: at most one `matter_device` adapter -------------
-    // Each live `matter_device` node binds the fixed Matter UDP port (5540) and
-    // shares the mDNS port; two nodes in one process collide at runtime. The build
-    // path already supports N northbound adapters structurally, but the Matter
-    // transport does not yet assign per-node ports, so reject a second
-    // `matter_device` at compile time rather than fail obscurely on boot. (Supporting
-    // multiple bridges — for several distinct Home accessories — is deferred work.)
-    let matter_device_adapters: Vec<&str> = adapters
-        .iter()
-        .filter(|a| a.plugin.map(|p| p.type_tag()) == Some("matter_device"))
-        .map(|a| a.name.as_str())
-        .collect();
-    if matter_device_adapters.len() > 1 {
-        let names = matter_device_adapters.join(", ");
-        diags.push(
-            Diagnostic::error(
-                "E_MULTIPLE_MATTER_DEVICE",
-                format!(
-                    "at most one `matter_device` adapter is supported (a second live Matter node \
-                     would collide on the Matter UDP port); found {}: {names}",
-                    matter_device_adapters.len()
-                ),
-            )
-            .at(format!("adapter '{}'", matter_device_adapters[1])),
-        );
     }
 
     // --- northbound `expose` validation -------------------------------------
@@ -488,31 +461,6 @@ pub fn resolve(raw: RawConfig) -> Result<CompiledConfig, CompileErrors> {
             None => {}
         }
 
-        // Soft capacity limit for the `matter_device` adapter: the live bridge uses
-        // fixed-depth dispatch shims (not a per-device handler chain), so this is a
-        // resolver guard on `DynamicNode` capacity (`MAX_MATTER_DEVICES`), not a
-        // compile-time type-size cap. Exposing more is a clear compile error rather
-        // than a confusing runtime truncation.
-        if adapter.plugin.map(|p| p.type_tag()) == Some("matter_device") {
-            let exposed_count = match plugin.expose_spec(&adapter.config) {
-                Some(crate::adapters::ExposeSpec::Named(names)) => names.len(),
-                Some(crate::adapters::ExposeSpec::All) => devices.len(),
-                None => 0,
-            };
-            let max = crate::adapters::matter_device::MAX_MATTER_DEVICES;
-            if exposed_count > max {
-                diags.push(
-                    Diagnostic::error(
-                        "E_TOO_MANY_EXPOSED",
-                        format!(
-                            "matter_device can expose at most {max} devices, but {exposed_count} are exposed; \
-                             narrow `expose`"
-                        ),
-                    )
-                    .at(format!("adapter '{}'", adapter.name)),
-                );
-            }
-        }
     }
     // Each adapter validates its own device addressing rules (friendly_name,
     // numeric node_id, …) through its plugin.

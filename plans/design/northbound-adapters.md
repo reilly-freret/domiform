@@ -1,5 +1,12 @@
 # Design: Northbound adapters & the Matter-device bridge
 
+> **REMOVED (2026-08-17).** The `matter_device` northbound adapter and the
+> `rs-matter` dependency were ripped out of the tree: upstream `rs-matter` bugs
+> made the live bridge unreliable, and the crate dominated compile time and
+> binary size. This document is retained as a **historical design record only** —
+> the code it describes no longer exists. Note that the *southbound* `matter`
+> adapter (`type: matter`, `url: ws://…:5580`) is unaffected and fully supported.
+
 Status: in progress. This introduces a **northbound / southbound** distinction to
 the adapter model and uses a Matter-device bridge (`type: matter_device`) — a
 native Matter node embedded via `rs-matter` — as the first northbound adapter and

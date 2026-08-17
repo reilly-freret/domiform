@@ -180,7 +180,7 @@ collected in one slice (`adapters/mod.rs`):
 ```rust
 static PLUGINS: &[&dyn AdapterPlugin] = &[
     &zigbee2mqtt::PLUGIN, &matter::PLUGIN, &zwavejs::PLUGIN,
-    &matter_device::PLUGIN, &mock::PLUGIN, &mock_northbound::PLUGIN,
+    &mock::PLUGIN, &mock_northbound::PLUGIN, &virtual_device::PLUGIN,
 ];
 ```
 
@@ -449,8 +449,8 @@ bottom is the zero-sized `PLUGIN` static from Stop 2: `type_tag()`,
 background thread — `main.rs` → `build_engine_with_waker_in` → `plugin.build` →
 `RumqttcTransport::connect`, the whole wake plumbing end to end in one parameter).
 
-Every adapter (`zwavejs.rs`, `matter.rs`, `clock.rs`, the `matter_device/`
-northbound bridge) is a variation on this template.
+Every adapter (`zwavejs.rs`, `matter.rs`, `clock.rs`, the `rest_api/` northbound
+surface) is a variation on this template.
 
 ---
 
@@ -460,7 +460,7 @@ Adapters carry a `Polarity` (`adapters/plugin.rs`):
 
 - **Southbound** (default; zigbee2mqtt, matter, zwavejs) — domiform is the
   controller; owns/commands the devices *bound* to it. Gets an engine dispatch slot.
-- **Northbound** (`matter_device`, `rest_api`, later web/voice) — domiform is the
+- **Northbound** (`rest_api`, later web/voice) — domiform is the
   source of truth; the consumer is upstream. Exposes devices declared *elsewhere*,
   binds none, gets **no** dispatch slot. Registered in a separate `northbound` list
   because it's driven on *both* paths: `tick`/`next_wake` like an adapter (drain
